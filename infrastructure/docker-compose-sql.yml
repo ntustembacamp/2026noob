@@ -1,0 +1,33 @@
+name: mysql
+services:
+  mysql:
+    container_name: db
+    image: mysql:latest
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --skip-character-set-client-handshake=0
+    volumes:
+      # - ../../noob/database:/var/lib/mysql
+      - mysql_data:/var/lib/mysql            # 資料持久化
+      # - mysql_config:/etc/mysql/conf.d       # 配置檔持久化
+      # - ../../noob/shared/my.cnf:/etc/mysql/my.cnf
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: mydatabase
+      MYSQL_USER: myuser
+      MYSQL_PASSWORD: mypassword
+    ports:
+      - "3306:3306"
+    networks:
+      - custom_network
+
+networks:
+  custom_network:
+    name: custom_network
+    driver: bridge
+
+
+volumes:
+  mysql_data:
+  # mysql_config:

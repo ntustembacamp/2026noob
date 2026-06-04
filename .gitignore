@@ -1,0 +1,72 @@
+# 建置輸出與執行期暫存
+/build/
+/dist/
+/logs/
+/__pycache__/
+/tmp_*/
+/*.log
+/*.tmp
+/*.pid
+/*.pid.lock
+/*.seed
+
+# Python 快取
+*.pyc
+*.pyo
+*.pyd
+
+# 常見備份與快照
+*.bak
+*.bak_*
+*.old
+*snapshot.*
+*live.*
+
+# 壓縮與打包產物
+*.zip
+*.tar
+*.tar.gz
+
+# 本機執行資料與暫存資料夾
+/database/logs/
+/database/tmp_*/
+/database/activity_import_tmp/
+/database/activity_schedule_uploads/
+/database/fixed_feature_src/
+/database/table_csv_backup/
+/database/uploadsource/
+/database/tmp_batch_uploads_windows/
+/database/tmp_batch_outputs_windows/
+/database/mark_db/
+/database/done_db/
+/database/test_db/
+/database/face_db/
+/database/*.csv
+/database/*.db
+
+# 服務層執行期快取
+/service/__pycache__/
+/shared/__pycache__/
+
+# 只排除備份，不排除正式模型/embedding
+/service/embedding/backups/
+/service/embedding/*.pkl.old
+/service/embedding/*.tar.gz
+/service/models/*.zip
+/service/models/*.tar.gz
+
+# UI 與腳本的暫存版本
+/service/ui_templates/*_AA.html
+/service/ui_templates/*.bak*
+/service/ui_templates/tmp_*.js
+/service/ui_templates/tmp_*.html
+/tmp_*.js
+/tmp_*.html
+/service/refer/
+/service/C*/
+
+# 舊版/備份腳本
+/admin_ui_script.js
+/windows_activity_import_laptop_tool_1150602.py
+/main_AA.py
+/service/main_AA.py

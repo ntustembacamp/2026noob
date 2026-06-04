@@ -1,0 +1,50 @@
+name: noob
+services:
+  python:
+    container_name: face_reco
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      sh /install/start.sh
+    volumes:
+      - ../../noob:/root/noob
+      - ../../noob/database:/mnt/database
+      # - ../../noob/database/activity:/mnt/activity
+      # - ../../noob/database/feature_src:/mnt/feature_src
+      - /c/activity:/mnt/activity
+      - /c/feature_src:/mnt/feature_src
+      # - /z/activity:/mnt/activity
+      # - /z/feature_src:/mnt/feature_src
+      # - \\NAS-NTUST-EMBA\test\activity:/mnt/activity
+      # - \\NAS-NTUST-EMBA\test\feature_src:/mnt/feature_src
+    environment:
+      - CONFIG_PATH=/root/noob/shared/
+      - LANG=C.UTF-8
+      - LC_ALL=C.UTF-8
+      - PYTHONUTF8=1
+      - PYTHONIOENCODING=utf-8
+    ports:
+      - "8000:8000"
+    depends_on:
+        - network
+    networks:
+      - custom_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+              device_ids: ["0"]  # 指定GPU ID
+  network:
+    container_name: hub
+    image: busybox
+    command: tail -f /dev/null
+    networks:
+      - custom_network
+
+networks:
+  custom_network:
+    name: custom_network
+    driver: bridge

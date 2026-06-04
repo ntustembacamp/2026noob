@@ -1,0 +1,38 @@
+name: noob
+services:
+  python:
+    container_name: face_reco
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      tail -f /dev/null
+    volumes:
+      - ../../noob:/root/noob
+      - ../../noob/database:/mnt/database
+      - ../../noob/database/activity:/mnt/activity
+      - ../../noob/database/feature_src:/mnt/feature_src
+      # - /Volumes/test/activity:/mnt/activity
+      # - /Volumes/test/feature_src:/mnt/feature_src
+    environment:
+      - CONFIG_PATH=/root/noob/shared/
+    ports:
+      - "8000:8000"
+    depends_on:
+        - network
+    networks:
+      - custom_network
+
+
+  network:
+    container_name: hub
+    image: busybox
+    command: tail -f /dev/null
+    networks:
+      - custom_network
+
+
+networks:
+  custom_network:
+    name: custom_network
+    driver: bridge

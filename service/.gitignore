@@ -1,0 +1,30 @@
+# 服務層執行期暫存
+.DS_Store
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.log
+
+# 影像與文件暫存
+**.jpg
+**.JPG
+**.jpeg
+**.heic
+**.png
+**.pdf
+**.tif
+
+# 不排除正式 embedding / 模型檔，只排除備份與壓縮檔
+embedding/backups/
+embedding/*.pkl.old
+embedding/*.tar.gz
+models/*.zip
+models/*.tar.gz
+
+# 服務層 UI 備份與暫存
+ui_templates/*_AA.html
+ui_templates/*.bak*
+ui_templates/tmp_*.js
+ui_templates/tmp_*.html
+
