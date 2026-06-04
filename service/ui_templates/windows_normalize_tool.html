@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Windows 圖檔正規化工具</title>
+  <style>
+    body {
+      font-family: "Segoe UI", "Noto Sans TC", sans-serif;
+      background: #f4efe7;
+      color: #1f2937;
+      margin: 0;
+    }
+    .wrap {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+    .panel {
+      background: #fffdfa;
+      border: 1px solid #d8cfbf;
+      border-radius: 18px;
+      padding: 24px;
+      box-shadow: 0 18px 46px rgba(41, 33, 18, 0.08);
+    }
+    h1 { margin: 0 0 12px; font-size: 32px; }
+    p { line-height: 1.7; margin: 8px 0; color: #4b5563; }
+    .code {
+      margin-top: 16px;
+      padding: 14px 16px;
+      background: #f8f5ee;
+      border: 1px solid #e6dccb;
+      border-radius: 12px;
+      word-break: break-all;
+      font-family: Consolas, "Courier New", monospace;
+      color: #111827;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 20px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px 18px;
+      border-radius: 999px;
+      text-decoration: none;
+      color: #fff;
+      background: linear-gradient(135deg, #92400e, #0f766e);
+      border: none;
+      cursor: pointer;
+      font: inherit;
+    }
+    .btn.secondary {
+      background: #fffdfa;
+      color: #1f2937;
+      border: 1px solid #d8cfbf;
+    }
+    .note {
+      margin-top: 18px;
+      color: #6b7280;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <h1>Windows 圖檔正規化工具</h1>
+      <p>這是本機工具啟動頁，用來下載並執行 <code>start_windows_normalize_tool.bat</code>。</p>
+      <p>此頁是「圖檔正規化工具」入口，不是 8010 服務啟動指引；若要啟動服務，請回正規化頁點「啟動指引」。</p>
+      <div class="code" id="toolPath">__TOOL_PATH__</div>
+      <div class="actions">
+        <a class="btn" href="__DOWNLOAD_URL__">下載 start_windows_normalize_tool.bat</a>
+        <button class="btn secondary" type="button" id="copyPathBtn">複製工具路徑</button>
+        <a class="btn secondary" href="/admin-batch-ui">回人員圖檔名稱正規化批次作業</a>
+        <a class="btn secondary" href="/">回首頁</a>
+      </div>
+      <p class="note">建議先確認目錄權限，再執行本機工具。</p>
+    </div>
+  </div>
+  <script>
+    document.getElementById('copyPathBtn').addEventListener('click', async () => {
+      await navigator.clipboard.writeText(document.getElementById('toolPath').textContent || '');
+    });
+  </script>
+</body>
+</html>

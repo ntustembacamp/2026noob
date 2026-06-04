@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>人員資料及特徵建置</title>
+  <style>
+    :root {
+      --bg: #f4efe7;
+      --panel: #fffdfa;
+      --ink: #1f2937;
+      --muted: #6b7280;
+      --line: #d8cfbf;
+      --accent: #92400e;
+      --accent2: #0f766e;
+      --soft: #eef8f6;
+      --soft-err: #fff1f2;
+      --warn: #f8efe3;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Microsoft JhengHei", "Noto Sans TC", sans-serif;
+      color: var(--ink);
+      background: linear-gradient(180deg, #e6ddcf, var(--bg));
+      min-height: 100vh;
+    }
+    .wrap {
+      max-width: 1360px;
+      margin: 0 auto;
+      padding: 32px 20px 56px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 24px;
+      box-shadow: 0 18px 46px rgba(41, 33, 18, 0.08);
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 34px;
+    }
+    h2 {
+      margin: 0 0 12px;
+      font-size: 24px;
+    }
+    p, label {
+      color: var(--muted);
+      line-height: 1.7;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .section {
+      margin-top: 20px;
+      padding: 20px;
+      border: 1px solid #ece3d4;
+      border-radius: 20px;
+      background: #fffaf4;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 180px minmax(260px, 1fr) 180px minmax(260px, 1fr);
+      gap: 12px 16px;
+      align-items: center;
+    }
+    input, select, button, .file-button, a.link-button {
+      width: 100%;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      padding: 12px 14px;
+      font-size: 15px;
+      background: white;
+      color: var(--ink);
+    }
+    input[readonly] {
+      background: #f8fafc;
+    }
+    button, .file-button, a.link-button {
+      border: 0;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: white;
+      cursor: pointer;
+      font-weight: 700;
+      text-align: center;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .file-button input {
+      display: none;
+    }
+    .secondary {
+      background: #e8f4f1;
+      color: #0f766e !important;
+    }
+    .helper {
+      margin-top: 10px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: var(--warn);
+      color: #92400e;
+      font-size: 13px;
+      white-space: pre-wrap;
+    }
+    .checkboxes {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(120px, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .checkboxes label {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: white;
+      border: 1px solid #ece3d4;
+      color: #1f2937;
+    }
+    .status {
+      margin-top: 14px;
+      padding: 14px 16px;
+      border-radius: 14px;
+      background: var(--soft);
+      color: #0f766e;
+      white-space: pre-wrap;
+    }
+    .status.error {
+      background: var(--soft-err);
+      color: #be123c;
+    }
+    .result-box {
+      margin-top: 14px;
+      padding: 16px;
+      min-height: 220px;
+      border-radius: 18px;
+      background: #fffdf8;
+      border: 1px solid #eadfcb;
+      overflow: auto;
+      white-space: pre-wrap;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 13px;
+    }
+    @media (max-width: 920px) {
+      .topbar { flex-direction: column; }
+      .grid { grid-template-columns: 1fr; }
+      .checkboxes { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
+    }
+    @media (max-width: 640px) {
+      .checkboxes { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <div class="topbar">
+        <div>
+          <h1>人員資料及特徵建置</h1>
+          <p>先將人員照片正規化，再建立 base 人員主檔與 embedding 特徵資料。</p>
+        </div>
+        <div class="actions">
+          <a class="link-button secondary" href="/">回到首頁</a>
+          <a class="link-button" href="/windows-normalize-tool">以 Windows 工具執行（不透過網頁執行）</a>
+        </div>
+      </div>
+
+      <section class="section">
+        <h2>人員圖檔名稱正規化批次作業</h2>
+        <p>此段會呼叫 Windows 正規化服務。請先選 Excel，再讀取欄位、指定原始檔名欄位與檔名組合欄位。</p>
+        <div class="grid">
+          <label>來源圖檔資料夾</label>
+          <input id="sourceDir" placeholder="可直接輸入 Windows 路徑，或使用右側按鈕選擇資料夾" />
+          <label class="file-button">選擇資料夾<input id="sourceFolderInput" type="file" webkitdirectory directory multiple /></label>
+          <div></div>
+
+          <label>目的圖檔資料夾</label>
+          <input id="destDir" value="C:\feature_src" placeholder="例如 C:\feature_src" />
+          <div></div>
+          <div></div>
+
+          <label>Excel 檔案</label>
+          <input id="excelPath" readonly placeholder="請先選擇 Excel 或 CSV" />
+          <label class="file-button">選擇檔案<input id="excelFileInput" type="file" accept=".xlsx,.xls,.xlsm,.csv" /></label>
+          <div></div>
+
+          <label>工作表</label>
+          <select id="sheetName"></select>
+          <button id="loadExcelBtn" type="button">讀取欄位</button>
+          <div></div>
+
+          <label>請選擇原始檔名欄位</label>
+          <select id="originalFilenameColumn"></select>
+          <label>檔名組合字元</label>
+          <input id="delimiter" value="_" />
+
+          <label>副檔名覆寫</label>
+          <input id="extensionOverride" placeholder="例如 jpg；預設不改" />
+          <div></div>
+          <div></div>
+        </div>
+
+        <div class="helper">檔名組合欄位：勾選後會依欄位順序組成新檔名，例如：系所_級別_小隊_姓名。</div>
+        <div id="filenameFields" class="checkboxes"></div>
+        <div class="actions" style="margin-top:16px;">
+          <button id="normalizeBtn" type="button">執行圖檔正規化</button>
+          <button id="openNormalizeLogBtn" type="button" class="secondary">用 Notepad 開啟正規化 Log</button>
+        </div>
+        <div id="normalizeStatus" class="status">等待執行。</div>
+        <pre id="normalizeResult" class="result-box"></pre>
+      </section>
+
+      <section class="section">
+        <h2>建立人員 base 資料及特徵資料作業</h2>
+        <p>此段會依指定資料夾執行 `new_insert_feature_src.py` 與 `new_construct_face_db.py`，建立 base 人員主檔與 embedding 特徵資料。</p>
+        <div class="grid">
+          <label>特徵來源資料夾</label>
+          <input id="featureFolderPath" value="C:\feature_src" placeholder="例如 C:\feature_src" />
+          <div></div>
+          <div></div>
+        </div>
+        <div class="actions" style="margin-top:16px;">
+          <button id="featureBuildBtn" type="button">建立人員 base 資料及特徵資料</button>
+          <button id="openFeatureLogBtn" type="button" class="secondary">用 Notepad 開啟特徵建置 Log</button>
+        </div>
+        <div id="featureStatus" class="status">等待執行。</div>
+        <pre id="featureResult" class="result-box"></pre>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const WINDOWS_BATCH_CANDIDATES = [
+      `${window.location.protocol}//${window.location.hostname}:8010`,
+      `${window.location.protocol}//localhost:8010`,
+      `${window.location.protocol}//127.0.0.1:8010`,
+    ].filter((value, index, array) => array.indexOf(value) === index);
+
+    const ids = {
+      sourceDir: document.getElementById('sourceDir'),
+      destDir: document.getElementById('destDir'),
+      excelPath: document.getElementById('excelPath'),
+      excelFileInput: document.getElementById('excelFileInput'),
+      sourceFolderInput: document.getElementById('sourceFolderInput'),
+      sheetName: document.getElementById('sheetName'),
+      loadExcelBtn: document.getElementById('loadExcelBtn'),
+      originalFilenameColumn: document.getElementById('originalFilenameColumn'),
+      delimiter: document.getElementById('delimiter'),
+      extensionOverride: document.getElementById('extensionOverride'),
+      filenameFields: document.getElementById('filenameFields'),
+      normalizeBtn: document.getElementById('normalizeBtn'),
+      normalizeStatus: document.getElementById('normalizeStatus'),
+      normalizeResult: document.getElementById('normalizeResult'),
+      openNormalizeLogBtn: document.getElementById('openNormalizeLogBtn'),
+      featureFolderPath: document.getElementById('featureFolderPath'),
+      featureBuildBtn: document.getElementById('featureBuildBtn'),
+      featureStatus: document.getElementById('featureStatus'),
+      featureResult: document.getElementById('featureResult'),
+      openFeatureLogBtn: document.getElementById('openFeatureLogBtn'),
+    };
+
+    let uploadedExcelServerPath = '';
+    let pendingSourceFiles = [];
+    let activeWindowsBatchBase = WINDOWS_BATCH_CANDIDATES[0];
+
+    function setStatus(element, message, isError = false) {
+      element.textContent = message;
+      element.className = isError ? 'status error' : 'status';
+    }
+
+    function errorText(error, fallback) {
+      if (typeof error === 'string') return error;
+      if (error && typeof error.message === 'string' && error.message.trim()) return error.message;
+      return fallback;
+    }
+
+    function fillSelect(select, columns, placeholder = '請選擇欄位', allowEmpty = true) {
+      const items = [];
+      if (allowEmpty) items.push(`<option value="">${placeholder}</option>`);
+      for (const col of columns || []) {
+        const text = String(col);
+        items.push(`<option value="${text.replaceAll('"', '&quot;')}">${text}</option>`);
+      }
+      select.innerHTML = items.join('');
+    }
+
+    function fillSheetNames(names, selected = '') {
+      const list = names && names.length ? names : ['CSV'];
+      ids.sheetName.innerHTML = list.map((name) => `<option value="${name}">${name}</option>`).join('');
+      ids.sheetName.value = selected || list[0];
+    }
+
+    function renderFieldCheckboxes(columns) {
+      ids.filenameFields.innerHTML = (columns || []).map((col) => {
+        const text = String(col);
+        return `<label><input type="checkbox" value="${text.replaceAll('"', '&quot;')}" /><span>${text}</span></label>`;
+      }).join('');
+    }
+
+    function getSelectedFields() {
+      return [...ids.filenameFields.querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value);
+    }
+
+    async function fetchWindowsBatch(path, options = {}) {
+      let lastError = null;
+      for (const baseUrl of WINDOWS_BATCH_CANDIDATES) {
+        try {
+          const response = await fetch(`${baseUrl}${path}`, options);
+          activeWindowsBatchBase = baseUrl;
+          return response;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      throw new Error(`無法連線到 Windows 正規化服務（${activeWindowsBatchBase}）。請先啟動 Windows 正規化服務後再重試。${lastError && lastError.message ? ` 詳細原因：${lastError.message}` : ''}`);
+    }
+
+    async function uploadExcel(file) {
+      const formData = new FormData();
+      formData.append('file', file);
+      const response = await fetchWindowsBatch('/admin/upload-excel', { method: 'POST', body: formData });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || 'Excel 上傳失敗。');
+      uploadedExcelServerPath = payload.server_path || payload.host_path || '';
+      ids.excelPath.value = file.name;
+      fillSheetNames(payload.sheet_names, payload.selected_sheet);
+      const columns = payload.columns || [];
+      fillSelect(ids.originalFilenameColumn, columns, '請選擇原始檔名欄位');
+      renderFieldCheckboxes(columns);
+      setStatus(ids.normalizeStatus, `Excel 上傳成功：${file.name}`);
+    }
+
+    async function uploadSourceFolder(files) {
+      const formData = new FormData();
+      [...files].forEach((file) => formData.append('files', file, file.webkitRelativePath || file.name));
+      const response = await fetchWindowsBatch('/admin/upload-source-folder', { method: 'POST', body: formData });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || '來源資料夾上傳失敗。');
+      ids.sourceDir.value = payload.host_path || payload.server_path || '';
+      return payload;
+    }
+
+    async function loadExcelColumns() {
+      if (!uploadedExcelServerPath) throw new Error('請先選擇 Excel 或 CSV。');
+      const params = new URLSearchParams({
+        excel_path: uploadedExcelServerPath,
+        sheet_name: ids.sheetName.value || '',
+      });
+      const response = await fetchWindowsBatch(`/admin/excel-columns?${params.toString()}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || '讀取欄位失敗。');
+      fillSheetNames(payload.sheet_names, payload.selected_sheet);
+      const columns = payload.columns || [];
+      fillSelect(ids.originalFilenameColumn, columns, '請選擇原始檔名欄位');
+      renderFieldCheckboxes(columns);
+      setStatus(ids.normalizeStatus, `已讀取工作表 ${payload.selected_sheet}，共 ${columns.length} 個欄位。`);
+    }
+
+    async function runNormalize() {
+      if (!uploadedExcelServerPath) throw new Error('請先選擇 Excel 或 CSV。');
+      if (!ids.originalFilenameColumn.value) throw new Error('請先選擇原始檔名欄位。');
+      const filenameFields = getSelectedFields();
+      if (!filenameFields.length) throw new Error('請至少勾選一個檔名組合欄位。');
+      if (!pendingSourceFiles.length && !ids.sourceDir.value.trim()) throw new Error('請先選擇來源圖檔資料夾。');
+
+      let sourceDir = ids.sourceDir.value.trim();
+      if (pendingSourceFiles.length) {
+        const payload = await uploadSourceFolder(pendingSourceFiles);
+        sourceDir = payload.host_path || payload.server_path || sourceDir;
+        pendingSourceFiles = [];
+      }
+
+      const payload = {
+        source_dir: sourceDir,
+        destination_dir: ids.destDir.value.trim(),
+        excel_path: uploadedExcelServerPath,
+        sheet_name: ids.sheetName.value || '',
+        original_filename_column: ids.originalFilenameColumn.value,
+        filename_fields: filenameFields,
+        delimiter: ids.delimiter.value || '_',
+        extension_override: ids.extensionOverride.value.trim(),
+      };
+
+      const response = await fetchWindowsBatch('/admin/batch-normalize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || '圖檔正規化失敗。');
+
+      setStatus(
+        ids.normalizeStatus,
+        `圖檔正規化完成：成功 ${result.processed_count || 0} 筆，缺檔 ${result.missing_count || 0} 筆。`
+      );
+      ids.normalizeResult.textContent = JSON.stringify(result, null, 2);
+      if (result.destination_host_dir) ids.featureFolderPath.value = result.destination_host_dir;
+    }
+
+    async function runFeatureBuild() {
+      const folderPath = ids.featureFolderPath.value.trim();
+      if (!folderPath) throw new Error('請先輸入特徵來源資料夾。');
+
+      const response = await fetch('/admin/feature-build', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ feature_folder_path: folderPath }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || '建立特徵資料失敗。');
+
+      setStatus(
+        ids.featureStatus,
+        `建立完成：base ${result.inserted_count || 0} 筆，embedding ${result.embedding_count || 0} 筆。`
+      );
+      ids.featureResult.textContent = JSON.stringify(result, null, 2);
+    }
+
+    async function openLog(logName) {
+      const response = await fetchWindowsBatch('/admin/open-log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ log_name: logName }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || '開啟 Log 失敗。');
+      return payload;
+    }
+
+    ids.excelFileInput.addEventListener('change', async (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      try {
+        await uploadExcel(file);
+      } catch (error) {
+        setStatus(ids.normalizeStatus, errorText(error, 'Excel 上傳失敗。'), true);
+      }
+      event.target.value = '';
+    });
+
+    ids.sourceFolderInput.addEventListener('change', (event) => {
+      const files = [...(event.target.files || [])];
+      if (!files.length) return;
+      pendingSourceFiles = files;
+      const folderName = files[0].webkitRelativePath ? files[0].webkitRelativePath.split('/')[0] : '來源資料夾';
+      ids.sourceDir.value = `${folderName}（共 ${files.length} 個檔案，待上傳）`;
+      setStatus(ids.normalizeStatus, `已選擇來源資料夾：${folderName}，共 ${files.length} 個檔案。`);
+      event.target.value = '';
+    });
+
+    ids.loadExcelBtn.addEventListener('click', async () => {
+      try {
+        await loadExcelColumns();
+      } catch (error) {
+        setStatus(ids.normalizeStatus, errorText(error, '讀取欄位失敗。'), true);
+      }
+    });
+
+    ids.normalizeBtn.addEventListener('click', async () => {
+      try {
+        await runNormalize();
+      } catch (error) {
+        setStatus(ids.normalizeStatus, errorText(error, '圖檔正規化失敗。'), true);
+      }
+    });
+
+    ids.featureBuildBtn.addEventListener('click', async () => {
+      try {
+        await runFeatureBuild();
+      } catch (error) {
+        setStatus(ids.featureStatus, errorText(error, '建立特徵資料失敗。'), true);
+      }
+    });
+
+    ids.openNormalizeLogBtn.addEventListener('click', async () => {
+      try {
+        const payload = await openLog('normalize');
+        setStatus(ids.normalizeStatus, `已嘗試用 Notepad 開啟 Log：${payload.log_path}`);
+      } catch (error) {
+        setStatus(ids.normalizeStatus, errorText(error, '開啟正規化 Log 失敗。'), true);
+      }
+    });
+
+    ids.openFeatureLogBtn.addEventListener('click', async () => {
+      try {
+        const payload = await openLog('feature-build');
+        setStatus(ids.featureStatus, `已嘗試用 Notepad 開啟 Log：${payload.log_path}`);
+      } catch (error) {
+        setStatus(ids.featureStatus, errorText(error, '開啟特徵建置 Log 失敗。'), true);
+      }
+    });
+  </script>
+</body>
+</html>

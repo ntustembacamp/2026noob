@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>活動照片辨識查詢</title>
+  <style>
+    :root {
+      --bg: #f4efe6;
+      --panel: #fffdf9;
+      --line: #dfd2bf;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --a: #9a3412;
+      --b: #0f766e;
+      --ok-bg: #eef8f5;
+      --ok-text: #0f766e;
+      --err-bg: #fff1f2;
+      --err-text: #be123c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background: linear-gradient(180deg, #e9dfcf, var(--bg));
+      font-family: "Segoe UI", "Noto Sans TC", sans-serif;
+    }
+    .wrap { max-width: 1400px; margin: 0 auto; padding: 24px 16px 40px; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 20px;
+      box-shadow: 0 14px 28px rgba(70, 52, 22, 0.08);
+    }
+    h1 { margin: 0 0 8px; font-size: 34px; }
+    p { margin: 0; color: var(--muted); line-height: 1.6; }
+    .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+    .btn {
+      border: 0; border-radius: 12px; padding: 10px 14px; font-size: 15px; font-weight: 700;
+      cursor: pointer; color: #fff; background: linear-gradient(135deg, var(--a), var(--b)); text-decoration: none; text-align: center;
+    }
+    .btn.secondary { color: #0f766e; background: #e8f5f1; border: 1px solid #cae8de; }
+    .btn.danger { background: #be123c; }
+    .btn.warn { background: #92400e; }
+    input:not([type="checkbox"]), select {
+      width: 100%; border: 1px solid var(--line); border-radius: 12px; background: #fff;
+      padding: 10px 12px; font-size: 15px; color: var(--text);
+    }
+    .filters { display: grid; gap: 10px; margin-bottom: 12px; }
+    .row4 { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px; }
+    .row2 { display: grid; grid-template-columns: repeat(2, minmax(120px, 1fr)); gap: 10px; }
+    .pair { display: grid; grid-template-columns: 150px minmax(180px, 1fr) 150px minmax(180px, 1fr); gap: 10px; align-items: center; }
+    .pair label { color: var(--muted); font-size: 14px; white-space: nowrap; }
+    .multi { display: grid; gap: 8px; }
+    .small-actions { display: flex; gap: 8px; margin-bottom: 2px; }
+    .small-actions .btn { width: auto; padding: 7px 10px; font-size: 13px; }
+    .checklist { border: 1px solid var(--line); border-radius: 12px; background: #fff; padding: 8px 10px; max-height: 150px; overflow: auto; }
+    .check-item { display: flex; align-items: center; justify-content: flex-start; gap: 8px; font-size: 14px; white-space: nowrap; margin: 4px 0; text-align: left; line-height: 1.4; }
+    .check-item input[type="checkbox"] { margin: 0; width: auto; flex: 0 0 auto; }
+    .check-item span { display: inline-block; overflow: hidden; text-overflow: ellipsis; }
+    .tags { display: flex; gap: 8px; flex-wrap: wrap; min-height: 24px; }
+    .tag { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; background: #f8eadc; color: #9a3412; padding: 4px 10px; font-size: 13px; }
+    .tag button { border: 0; background: transparent; color: inherit; cursor: pointer; font-weight: 700; padding: 0; }
+    .status { border-radius: 12px; padding: 12px 14px; background: var(--ok-bg); color: var(--ok-text); white-space: pre-wrap; margin: 10px 0; }
+    .status.error { background: var(--err-bg); color: var(--err-text); }
+    .section { border: 1px solid var(--line); border-radius: 14px; background: #fbf7ef; padding: 12px; margin: 10px 0; display: grid; gap: 10px; }
+    .results { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+    .empty { border: 1px dashed var(--line); background: #fbf7ef; border-radius: 14px; padding: 18px; color: var(--muted); }
+    .card { border: 1px solid #ebdecb; background: #fff; border-radius: 18px; overflow: hidden; box-shadow: 0 10px 24px rgba(71, 53, 24, 0.08); }
+    .thumb { aspect-ratio: 4 / 3; background: #e5ddcf; display: flex; align-items: center; justify-content: center; overflow: hidden; color: #6b7280; font-size: 13px; }
+    .thumb img { width: 100%; height: 100%; object-fit: cover; }
+    .body { padding: 12px; display: grid; gap: 8px; min-width: 0; }
+    .badge-row { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+    .badge { border-radius: 999px; background: #f6e6d7; color: #9a3412; font-size: 12px; padding: 4px 10px; }
+    .meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; min-width: 0; }
+    .meta span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 2px; }
+    .mono {
+      font-family: Consolas, "Courier New", monospace; font-size: 12px; background: #faf6f0; border: 1px solid #ede1d2;
+      border-radius: 10px; padding: 8px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; min-width: 0;
+    }
+    .select-row { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+    .paging { margin-top: 12px; display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .hidden { display: none !important; }
+    .hint { color: var(--muted); font-size: 13px; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+    .body > div, .body details, .body summary, .meta > div { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+    .name-summary { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .name-score-btn { width: 100%; }
+    .modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(17, 24, 39, 0.45);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px;
+      z-index: 2000;
+    }
+    .modal.hidden { display: none !important; }
+    .modal-panel {
+      width: min(680px, 96vw);
+      max-height: 82vh;
+      overflow: auto;
+      background: #fffdf9;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+    }
+    .modal-panel.large { width: min(1100px, 96vw); }
+    .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .modal-title { font-weight: 700; }
+    .score-table { width: 100%; border-collapse: collapse; }
+    .score-table th, .score-table td {
+      border-bottom: 1px solid #efe2cf;
+      text-align: left;
+      padding: 8px 6px;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .split-preview {
+      display: grid;
+      grid-template-columns: minmax(320px, 1.2fr) minmax(240px, 1fr);
+      gap: 12px;
+      align-items: start;
+    }
+    .split-preview .image-box {
+      border: 1px solid #efe2cf;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #f4f0e8;
+      min-height: 220px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .split-preview .image-box img { width: 100%; height: auto; display: block; }
+    .annotated-frame { position: relative; width: 100%; }
+    .annotated-frame img { width: 100%; height: auto; display: block; }
+    .annotated-overlay {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+    .face-row { cursor: pointer; }
+    .face-row.active { background: #fff2df; }
+    .face-row.no-box { color: #9ca3af; cursor: default; }
+    @media (max-width: 980px) { .split-preview { grid-template-columns: 1fr; } }
+    @media (max-width: 980px) { .row4 { grid-template-columns: repeat(2, minmax(120px, 1fr)); } .pair { grid-template-columns: 1fr; } }
+    @media (max-width: 680px) { .row4, .row2 { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <div class="top">
+        <div>
+          <h1>活動照片辨識查詢</h1>
+          <p>可查詢成功、失敗、未知與待處理照片，支援勾選刪除、標記與照片交付。</p>
+        </div>
+        <a class="btn secondary" href="/">回到首頁</a>
+      </div>
+
+      <div id="statusBox" class="status">請設定條件後按「開始查詢」。</div>
+
+      <div class="filters">
+        <div class="row4">
+          <select id="deptMode"><option value="single">單一系所查詢</option><option value="multi">多系所查詢</option></select>
+          <select id="yearMode"><option value="single">單一级別查詢</option><option value="multi">多級別查詢</option></select>
+          <select id="teamMode"><option value="single">單一小隊查詢</option><option value="multi">多小隊查詢</option></select>
+          <input id="name" placeholder="可輸入姓名關鍵字" />
+        </div>
+
+        <div class="row4">
+          <div class="multi">
+            <select id="deptSingle"><option value="">請選擇系所</option></select>
+            <div id="deptMultiWrap" class="hidden">
+              <div class="small-actions"><button type="button" class="btn secondary" id="deptSelectAllBtn">全選</button><button type="button" class="btn secondary" id="deptClearAllBtn">全部清除</button></div>
+              <div class="checklist" id="deptChecklist"></div>
+              <div class="tags" id="deptSelectedTags"></div>
+            </div>
+          </div>
+          <div class="multi">
+            <select id="yearSingle"><option value="">請選擇級別</option></select>
+            <div id="yearMultiWrap" class="hidden">
+              <div class="small-actions"><button type="button" class="btn secondary" id="yearSelectAllBtn">全選</button><button type="button" class="btn secondary" id="yearClearAllBtn">全部清除</button></div>
+              <div class="checklist" id="yearChecklist"></div>
+              <div class="tags" id="yearSelectedTags"></div>
+            </div>
+          </div>
+          <div class="multi">
+            <select id="teamSingle"><option value="">請選擇小隊</option></select>
+            <div id="teamMultiWrap" class="hidden">
+              <div class="small-actions"><button type="button" class="btn secondary" id="teamSelectAllBtn">全選</button><button type="button" class="btn secondary" id="teamClearAllBtn">全部清除</button></div>
+              <div class="checklist" id="teamChecklist"></div>
+              <div class="tags" id="teamSelectedTags"></div>
+            </div>
+          </div>
+          <div>
+            <select id="recognitionStatus">
+              <option value="">全部狀態</option><option value="DONE">成功（不含 unknown）</option><option value="MIXED">混合（成功 + unknown）</option>
+              <option value="UNKNOWN">未知（全部 unknown）</option><option value="FAILED">失敗</option><option value="PENDING">待處理</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row2">
+          <div><label class="hint" for="activityScheduleId">依活動名稱查詢（含時間區間）</label><select id="activityScheduleId"><option value="">不指定活動</option></select></div>
+          <div><label class="hint" for="markType">依標記查詢</label><select id="markType"><option value="all">全部標記狀態</option><option value="award">只看獎項照片</option><option value="video">只看影片照片</option><option value="both">同時是獎項與影片</option><option value="none">未標記</option></select></div>
+        </div>
+
+        <div class="pair"><label for="takenStartTime">拍攝時間起</label><input id="takenStartTime" type="datetime-local" /><label for="takenEndTime">拍攝時間迄</label><input id="takenEndTime" type="datetime-local" /></div>
+        <div class="pair"><label for="startTime">建立時間起</label><input id="startTime" type="datetime-local" /><label for="endTime">建立時間迄</label><input id="endTime" type="datetime-local" /></div>
+        <div class="pair"><label for="detScoreMin">臉部偵測 det_score 起</label><input id="detScoreMin" type="number" step="0.0001" placeholder="例如 0.5" /><label for="detScoreMax">臉部偵測 det_score 迄</label><input id="detScoreMax" type="number" step="0.0001" placeholder="例如 1.0" /></div>
+        <div class="pair"><label for="pageSize">每頁顯示筆數</label><select id="pageSize"><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option></select><label for="recoCount">辨識筆數（人臉數）</label><input id="recoCount" type="number" min="0" placeholder="留空表示不限" /></div>
+        <div class="pair"><label for="resultMode">顯示模式</label><select id="resultMode"><option value="photo" selected>照片聚合（預設）</option><option value="detail">人臉明細（一人一筆）</option></select><label for="awardFilter">獎項條件（多選）</label><select id="awardFilter" multiple size="4"></select></div>
+        <div class="row2"><button id="searchBtn" class="btn" type="button">開始查詢</button><button id="clearBtn" class="btn secondary" type="button">清除查詢</button></div>
+      </div>
+
+      <div class="section">
+        <div class="hint">勾選操作</div>
+        <div class="row2">
+          <div class="row2"><button id="selectPageBtn" type="button" class="btn secondary">本頁全選</button><button id="clearSelectBtn" type="button" class="btn secondary">清除勾選</button></div>
+          <div class="row2"><button id="deleteSelectedBtn" type="button" class="btn warn">刪除本頁勾選</button><button id="deleteByFilterBtn" type="button" class="btn danger">刪除查詢全部（跨頁）</button></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="hint">批次標記</div>
+        <div class="pair">
+          <label for="awardMarkSelect">活動獎項（可多選）</label>
+          <select id="awardMarkSelect" multiple size="5"></select>
+          <label>標記操作</label>
+          <div class="row2">
+            <button id="markAwardBtn" type="button" class="btn">標記為獎項照片</button>
+            <button id="unmarkAwardBtn" type="button" class="btn secondary">移除獎項標記</button>
+            <button id="markVideoBtn" type="button" class="btn">標記為製作影片照片</button>
+            <button id="unmarkVideoBtn" type="button" class="btn secondary">取消影片標記</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="hint">勾選照片交付</div>
+        <div class="pair">
+          <label for="deliveryMode">交付方式</label>
+          <select id="deliveryMode"><option value="zip">下載 ZIP</option><option value="folder">輸出資料夾</option><option value="both">兩者都要</option></select>
+          <label for="photoVariant">照片版本</label>
+          <select id="photoVariant"><option value="both">原圖 + 縮圖</option><option value="origin">只原圖</option><option value="thumb">只縮圖</option></select>
+        </div>
+        <button id="exportSelectedBtn" type="button" class="btn">匯出勾選照片</button>
+        <div id="exportResult" class="hint"></div>
+      </div>
+
+      <div id="results" class="results"></div>
+      <div class="paging"><button id="prevBtn" type="button" class="btn secondary">上一頁</button><div id="pageInfo">第 1 / 1 頁，共 0 筆</div><button id="nextBtn" type="button" class="btn secondary">下一頁</button></div>
+    </div>
+  </div>
+  <div id="nameScoreModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="nameScoreModalTitle">
+    <div class="modal-panel">
+      <div class="modal-head">
+        <div id="nameScoreModalTitle" class="modal-title">成功姓名清單</div>
+        <button id="nameScoreModalCloseBtn" type="button" class="btn secondary">關閉</button>
+      </div>
+      <div id="nameScoreModalBody"></div>
+    </div>
+  </div>
+  <div id="annotatedNameModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="annotatedNameModalTitle">
+    <div class="modal-panel large">
+      <div class="modal-head">
+        <div id="annotatedNameModalTitle" class="modal-title">辨識圖片 + 姓名</div>
+        <button id="annotatedNameModalCloseBtn" type="button" class="btn secondary">關閉</button>
+      </div>
+      <div class="split-preview">
+        <div id="annotatedNameImageWrap" class="image-box">讀取中...</div>
+        <div id="annotatedNameListWrap"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const state = { page: 1, totalPages: 1, selectedUploadIds: new Set(), deptOptions: [], yearOptions: [], teamOptions: [], activityOptions: [], awardOptions: [], latestItems: [] };
+    const el = (id) => document.getElementById(id);
+    const toNumber = (v) => (v === null || v === undefined || v === "" ? null : (Number.isFinite(Number(v)) ? Number(v) : null));
+    const safeText = (v, fallback = "") => (v === null || v === undefined ? fallback : (String(v).trim() ? String(v) : fallback));
+    const normalizeStatus = (status) => String(status || "").toUpperCase();
+    const isNumericOnly = (v) => /^-?\d+$/.test(String(v || "").trim());
+
+    function sortMixedValues(values) {
+      const uniq = Array.from(new Set((values || []).map((v) => String(v).trim()).filter(Boolean)));
+      const nums = []; const texts = [];
+      for (const value of uniq) { if (isNumericOnly(value)) nums.push(value); else texts.push(value); }
+      nums.sort((a, b) => Number(a) - Number(b));
+      texts.sort((a, b) => a.localeCompare(b, "zh-Hant-u-co-stroke"));
+      return nums.concat(texts);
+    }
+    function setStatus(msg, isError = false) { const box = el("statusBox"); box.textContent = msg || ""; box.classList.toggle("error", !!isError); }
+    function getCheckedValues(checklistId) { return Array.from(el(checklistId).querySelectorAll("input[type='checkbox']:checked")).map((item) => item.value); }
+    function renderChecklist(containerId, values) {
+      const container = el(containerId); container.innerHTML = "";
+      for (const value of values) {
+        const label = document.createElement("label");
+        label.className = "check-item";
+        label.innerHTML = `<input type="checkbox" value="${value}" /><span>${value}</span>`;
+        container.appendChild(label);
+      }
+    }
+    function renderTags(targetId, values, onRemove) {
+      const target = el(targetId); target.innerHTML = "";
+      for (const value of values) {
+        const tag = document.createElement("span");
+        tag.className = "tag";
+        tag.innerHTML = `<span>${value}</span><button type="button">×</button>`;
+        tag.querySelector("button").addEventListener("click", () => onRemove(value));
+        target.appendChild(tag);
+      }
+    }
+    function syncModeWrap(modeId, singleId, multiWrapId) {
+      const mode = el(modeId).value;
+      el(singleId).classList.toggle("hidden", mode !== "single");
+      el(multiWrapId).classList.toggle("hidden", mode !== "multi");
+    }
+    function setSelectOptions(selectId, options, placeholder) {
+      const target = el(selectId); target.innerHTML = `<option value="">${placeholder}</option>`;
+      for (const option of options) { const opt = document.createElement("option"); opt.value = option; opt.textContent = option; target.appendChild(opt); }
+    }
+    function collectFilters() {
+      const deptMode = el("deptMode").value; const yearMode = el("yearMode").value; const teamMode = el("teamMode").value;
+      const dept = deptMode === "single" ? (el("deptSingle").value ? [el("deptSingle").value] : []) : getCheckedValues("deptChecklist");
+      const yearsMulti = yearMode === "multi" ? getCheckedValues("yearChecklist").map((v) => Number(v)).filter(Number.isFinite) : [];
+      const yearSingle = yearMode === "single" ? toNumber(el("yearSingle").value) : null;
+      const team = teamMode === "single" ? (el("teamSingle").value ? [el("teamSingle").value] : []) : getCheckedValues("teamChecklist");
+      const awardFilterValues = Array.from(el("awardFilter").selectedOptions || []).map((opt) => Number(opt.value)).filter(Number.isFinite);
+      return {
+        dept, year: yearSingle, years: yearsMulti, team, name: el("name").value.trim(),
+        start_time: el("startTime").value, end_time: el("endTime").value,
+        taken_start_time: el("takenStartTime").value, taken_end_time: el("takenEndTime").value,
+        det_score_min: toNumber(el("detScoreMin").value), det_score_max: toNumber(el("detScoreMax").value),
+        reco_count: toNumber(el("recoCount").value), recognition_status: el("recognitionStatus").value,
+        mark_type: el("markType").value, award_ids: awardFilterValues,
+        activity_schedule_id: toNumber(el("activityScheduleId").value),
+        result_mode: el("resultMode").value || "photo",
+        page: state.page, limit: Number(el("pageSize").value || 20),
+      };
+    }
+    function buildQueryString(filters) {
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(filters)) {
+        if (Array.isArray(value)) { value.forEach((item) => { if (item !== null && item !== undefined && String(item) !== "") params.append(key, String(item)); }); continue; }
+        if (value === null || value === undefined || value === "") continue;
+        params.set(key, String(value));
+      }
+      return params.toString();
+    }
+
+    async function loadFilterOptions() {
+      const res = await fetch("/query-filter-options"); const payload = await res.json();
+      if (!res.ok) throw new Error(payload.detail || "讀取查詢條件失敗");
+      state.deptOptions = sortMixedValues(payload.dept_options || []);
+      state.yearOptions = sortMixedValues((payload.year_options || []).map((v) => String(v)));
+      state.teamOptions = sortMixedValues(payload.team_options || []);
+      setSelectOptions("deptSingle", state.deptOptions, "請選擇系所");
+      setSelectOptions("yearSingle", state.yearOptions, "請選擇級別");
+      setSelectOptions("teamSingle", state.teamOptions, "請選擇小隊");
+      renderChecklist("deptChecklist", state.deptOptions);
+      renderChecklist("yearChecklist", state.yearOptions);
+      renderChecklist("teamChecklist", state.teamOptions);
+    }
+    async function loadActivityOptions() {
+      const res = await fetch("/activity-schedules/options"); const payload = await res.json();
+      if (!res.ok) throw new Error(payload.detail || "讀取活動行程選單失敗");
+      state.activityOptions = payload.items || [];
+      const target = el("activityScheduleId"); target.innerHTML = '<option value="">不指定活動</option>';
+      for (const item of state.activityOptions) {
+        const option = document.createElement("option");
+        option.value = String(item.id || "");
+        option.textContent = safeText(item.label, `${safeText(item.activity_code, "A0000")} ${safeText(item.activity_date, "")} ${safeText(item.activity_time_range || item.activity_time, "00:00:00")} ${safeText(item.activity_content, "")}`.trim());
+        target.appendChild(option);
+      }
+    }
+    function applySelectOptions(selectId, options) {
+      const target = el(selectId); target.innerHTML = "";
+      for (const item of options) {
+        const option = document.createElement("option");
+        option.value = String(item.id || "");
+        option.textContent = safeText(item.label, `${safeText(item.serial_no, "")} ${safeText(item.award_name, "")}`.trim());
+        target.appendChild(option);
+      }
+    }
+    async function loadAwardOptions() {
+      const res = await fetch("/activity-awards/options"); const payload = await res.json();
+      if (!res.ok) throw new Error(payload.detail || "讀取活動獎項失敗");
+      state.awardOptions = payload.items || [];
+      applySelectOptions("awardFilter", state.awardOptions);
+      applySelectOptions("awardMarkSelect", state.awardOptions);
+    }
+    function getStatusBadgeText(status) {
+      const s = normalizeStatus(status);
+      if (s === "DONE") return "成功";
+      if (s === "MIXED") return "混合";
+      if (s === "UNKNOWN") return "未知";
+      if (s === "FAILED") return "失敗";
+      if (s === "PENDING") return "待處理";
+      return s || "未知";
+    }
+    function createThumbHtml(item) {
+      const thumb = safeText(item.thumbs_full_path, "");
+      const origin = safeText(item.origin_full_path, "");
+      if (!thumb && !origin) return '<div class="thumb">無縮圖路徑</div><div class="hint">無原圖路徑</div>';
+      const src = thumb ? `/preview-image?file_path=${encodeURIComponent(thumb)}` : "";
+      const imgHtml = src ? `<img src="${src}" alt="縮圖" onerror="this.style.display='none';this.parentElement.textContent='縮圖讀取失敗';" />` : "無縮圖路徑";
+      const link = origin ? `<a href="/preview-image?file_path=${encodeURIComponent(origin)}" target="_blank" rel="noopener noreferrer">開原圖</a>` : "無原圖路徑";
+      return `<div class="thumb">${imgHtml}</div><div class="hint">${link}</div>`;
+    }
+    function toFixedOrNone(v) { const n = Number(v); return Number.isFinite(n) ? n.toFixed(4) : "None"; }
+    function buildKnownNameScoreList(item) {
+      const names = Array.isArray(item.reco_name) ? item.reco_name : [];
+      const scores = Array.isArray(item.reco_res) ? item.reco_res : [];
+      const knownNames = Array.isArray(item.known_names_full) ? item.known_names_full : [];
+      const rows = [];
+      const parseBbox = (entry) => {
+        if (!entry || typeof entry !== "object") return null;
+        const bbox = entry.bbox;
+        if (!Array.isArray(bbox) || bbox.length < 4) return null;
+        const vals = bbox.slice(0, 4).map((v) => Number(v));
+        if (vals.some((v) => !Number.isFinite(v))) return null;
+        return {
+          x1: vals[0],
+          y1: vals[1],
+          x2: vals[2],
+          y2: vals[3],
+        };
+      };
+      for (let i = 0; i < names.length; i += 1) {
+        const name = safeText(names[i], "");
+        if (!name || name.toLowerCase() === "unknown") continue;
+        const scoreEntry = scores[i];
+        let scoreText = "None";
+        if (scoreEntry && typeof scoreEntry === "object") {
+          const score = Number(scoreEntry.det_score);
+          if (Number.isFinite(score)) scoreText = score.toFixed(4);
+        }
+        const box = parseBbox(scoreEntry);
+        rows.push({ name, detScore: scoreText, bbox: box, hasBox: !!box });
+      }
+      if (rows.length > 0) return rows;
+      // fallback：若 reco_name/reco_res 不可用，至少把 known_names_full 顯示出來
+      return knownNames.map((name) => ({ name: safeText(name, ""), detScore: "None", bbox: null, hasBox: false })).filter((r) => r.name);
+    }
+    function renderFaceOverlay(pairs) {
+      const svg = pairs.map((row, idx) => {
+        if (!row.hasBox || !row.bbox) return "";
+        const x = Math.min(row.bbox.x1, row.bbox.x2);
+        const y = Math.min(row.bbox.y1, row.bbox.y2);
+        const w = Math.max(Math.abs(row.bbox.x2 - row.bbox.x1), 2);
+        const h = Math.max(Math.abs(row.bbox.y2 - row.bbox.y1), 2);
+        return `<rect data-face-index="${idx}" x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="#f97316" stroke-width="2"></rect>`;
+      }).join("");
+      return svg;
+    }
+    function bindFaceHoverInteractions() {
+      const rows = Array.from(document.querySelectorAll(".face-row[data-face-index]"));
+      const rects = Array.from(document.querySelectorAll("rect[data-face-index]"));
+      let lockedIndex = null;
+
+      const setActive = (index) => {
+        rows.forEach((row) => row.classList.toggle("active", Number(row.dataset.faceIndex) === index));
+        rects.forEach((rect) => {
+          const isActive = Number(rect.dataset.faceIndex) === index;
+          rect.setAttribute("stroke", isActive ? "#dc2626" : "transparent");
+          rect.setAttribute("stroke-width", isActive ? "8" : "0");
+          rect.setAttribute("fill", isActive ? "rgba(220,38,38,0.18)" : "none");
+          rect.setAttribute("stroke-linejoin", "round");
+          rect.setAttribute("stroke-linecap", "round");
+        });
+      };
+      setActive(null);
+
+      rows.forEach((row) => {
+        if (row.classList.contains("no-box")) return;
+        const idx = Number(row.dataset.faceIndex);
+        row.addEventListener("click", () => {
+          lockedIndex = (lockedIndex === idx) ? null : idx;
+          if (lockedIndex === null) setActive(null); else setActive(lockedIndex);
+        });
+      });
+    }
+    function openNameScoreModal(item) {
+      const modal = el("nameScoreModal");
+      const title = el("nameScoreModalTitle");
+      const body = el("nameScoreModalBody");
+      const list = buildKnownNameScoreList(item);
+      title.textContent = `成功姓名清單（img_upload_id=${safeText(item.img_upload_id, "-")}）`;
+      if (list.length === 0) {
+        body.innerHTML = '<div class="hint">沒有可顯示的成功姓名。</div>';
+      } else {
+        body.innerHTML = `
+          <table class="score-table">
+            <thead><tr><th>姓名</th><th>det_score</th></tr></thead>
+            <tbody>
+              ${list.map((row) => `<tr><td>${safeText(row.name, "")}</td><td>${safeText(row.detScore, "None")}</td></tr>`).join("")}
+            </tbody>
+          </table>`;
+      }
+      modal.classList.remove("hidden");
+    }
+    function closeNameScoreModal() {
+      el("nameScoreModal").classList.add("hidden");
+    }
+    function openAnnotatedNameModal(item) {
+      const modal = el("annotatedNameModal");
+      const title = el("annotatedNameModalTitle");
+      const imageWrap = el("annotatedNameImageWrap");
+      const listWrap = el("annotatedNameListWrap");
+      const uploadId = Number(item.img_upload_id || 0);
+      title.textContent = `辨識圖片 + 姓名（img_upload_id=${safeText(item.img_upload_id, "-")}）`;
+      const originPath = safeText(item.origin_full_path, "");
+      if (!originPath) {
+        imageWrap.textContent = "無原圖路徑。";
+      } else {
+        const src = `/preview-image?file_path=${encodeURIComponent(originPath)}`;
+        imageWrap.innerHTML = `
+          <div class="annotated-frame">
+            <img id="annotatedImageElement" src="${src}" alt="辨識標註圖" onerror="this.style.display='none'; this.parentElement.textContent='標註圖讀取失敗（可能無 bbox 或原圖不存在）';" />
+            <svg id="annotatedOverlaySvg" class="annotated-overlay"></svg>
+          </div>`;
+      }
+      const pairs = buildKnownNameScoreList(item);
+      if (pairs.length === 0) {
+        listWrap.innerHTML = '<div class="hint">沒有可顯示的人臉辨識資料。</div>';
+      } else {
+        listWrap.innerHTML = `
+          <table class="score-table">
+            <thead><tr><th>序號</th><th>姓名</th><th>det_score</th></tr></thead>
+            <tbody>${pairs.map((row, idx) => `<tr class="face-row ${row.hasBox ? "" : "no-box"}" data-face-index="${idx}"><td>${idx + 1}</td><td>${safeText(row.name, "unknown")}</td><td>${safeText(row.detScore, "None")}</td></tr>`).join("")}</tbody>
+          </table>`;
+      }
+      const image = el("annotatedImageElement");
+      const overlay = el("annotatedOverlaySvg");
+      if (image && overlay) {
+        const drawOverlay = () => {
+          const naturalW = image.naturalWidth || 0;
+          const naturalH = image.naturalHeight || 0;
+          if (naturalW <= 0 || naturalH <= 0) return;
+          overlay.setAttribute("viewBox", `0 0 ${naturalW} ${naturalH}`);
+          overlay.innerHTML = renderFaceOverlay(pairs);
+          bindFaceHoverInteractions();
+        };
+        if (image.complete) drawOverlay();
+        image.addEventListener("load", drawOverlay, { once: true });
+      }
+      modal.classList.remove("hidden");
+    }
+    function closeAnnotatedNameModal() { el("annotatedNameModal").classList.add("hidden"); }
+    function renderPhotoCard(item) {
+      const uploadId = Number(item.img_upload_id || 0);
+      const checked = state.selectedUploadIds.has(uploadId) ? "checked" : "";
+      const status = getStatusBadgeText(item.recognition_status);
+      const known = Number(item.known_count || 0);
+      const unknown = Number(item.unknown_count || 0);
+      const total = Number(item.face_total_count || 0);
+      const names = Array.isArray(item.known_names_preview) ? item.known_names_preview : [];
+      const fullNames = Array.isArray(item.known_names_full) ? item.known_names_full : [];
+      const hidden = Number(item.known_names_hidden_count || 0);
+      const awardTags = Array.isArray(item.award_tags) ? item.award_tags : [];
+      const awardBadges = awardTags.map((tag) => `<span class="badge">獎項 ${safeText(tag.serial_no, "")} ${safeText(tag.award_name, "")}</span>`).join("");
+      const videoBadge = Number(item.is_video_pick || 0) === 1 ? '<span class="badge">製作影片</span>' : "";
+      const nameSummary = names.length > 0 ? names.join("、") : "無成功人名";
+      const fullNameSummary = fullNames.length > 0 ? fullNames.join("、") : "無成功人名";
+      const isSingleSuccess = known === 1 && unknown === 0 && String(item.recognition_status || "").toUpperCase() === "DONE";
+      const scoreList = buildKnownNameScoreList(item);
+      const singleName = scoreList.length > 0 ? scoreList[0].name : (names[0] || "無成功人名");
+      const singleScore = scoreList.length > 0 ? scoreList[0].detScore : toFixedOrNone(item.det_score_max);
+      return `
+        <div class="card">
+          ${createThumbHtml(item)}
+          <div class="body">
+            <label class="select-row"><input type="checkbox" class="row-check" data-upload-id="${uploadId}" ${checked}/>勾選</label>
+            <div class="badge-row"><span class="badge">狀態：${status}</span>${videoBadge}${awardBadges}</div>
+            ${isSingleSuccess ? `
+              <div><strong>${safeText(singleName, "無成功人名")}</strong></div>
+            ` : `
+              <div><strong>活動照片摘要：共 ${total} 人（成功 ${known} / unknown ${unknown}）</strong></div>
+              <button type="button" class="btn secondary name-score-btn" data-open-annotated-name="${uploadId}">辨識圖片＋姓名</button>
+            `}
+            <div class="meta">
+              <div><span>拍攝時間</span>${safeText(item.photo_taken_time, "None")}</div>
+              <div><span>建立時間</span>${safeText(item.photo_create_time, "None")}</div>
+              ${isSingleSuccess
+                ? `<div><span>det_score</span>${safeText(singleScore, "None")}</div>`
+                : `<div><span>det_score(max/min)</span>${toFixedOrNone(item.det_score_max)} / ${toFixedOrNone(item.det_score_min)}</div>`
+              }
+              <div><span>img_upload_id</span>${uploadId || "-"}</div>
+            </div>
+            <div class="mono">${safeText(item.photo_uuid, "")}</div>
+          </div>
+        </div>`;
+    }
+    function renderDetailCard(item) {
+      const uploadId = Number(item.img_upload_id || 0);
+      const checked = state.selectedUploadIds.has(uploadId) ? "checked" : "";
+      const status = getStatusBadgeText(item.recognition_status);
+      const names = Array.isArray(item.reco_name) ? item.reco_name.join("、") : safeText(item.reco_name, "");
+      return `
+        <div class="card">
+          ${createThumbHtml(item)}
+          <div class="body">
+            <label class="select-row"><input type="checkbox" class="row-check" data-upload-id="${uploadId}" ${checked}/>勾選</label>
+            <div class="badge-row"><span class="badge">狀態：${status}</span></div>
+            <div><strong>${safeText(item.matched_person, "(未匹配)")}</strong></div>
+            <div class="hint">reco_name：${safeText(names, "None")}</div>
+            <div class="meta">
+              <div><span>拍攝時間</span>${safeText(item.photo_taken_time, "None")}</div>
+              <div><span>建立時間</span>${safeText(item.photo_create_time, "None")}</div>
+              <div><span>det_score</span>${safeText(item.det_score, "None")}</div>
+              <div><span>img_upload_id</span>${uploadId || "-"}</div>
+            </div>
+          </div>
+        </div>`;
+    }
+    function bindResultCheckboxEvents() {
+      Array.from(document.querySelectorAll(".row-check")).forEach((input) => {
+        input.addEventListener("change", () => {
+          const uploadId = Number(input.dataset.uploadId || 0);
+          if (!uploadId) return;
+          if (input.checked) state.selectedUploadIds.add(uploadId); else state.selectedUploadIds.delete(uploadId);
+        });
+      });
+      Array.from(document.querySelectorAll("[data-open-annotated-name]")).forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const uploadId = Number(btn.getAttribute("data-open-annotated-name") || 0);
+          const item = state.latestItems.find((x) => Number(x.img_upload_id || 0) === uploadId);
+          if (!item) return;
+          openAnnotatedNameModal(item);
+        });
+      });
+    }
+    function renderResults(items) {
+      const target = el("results");
+      state.latestItems = items || [];
+      if (!items || items.length === 0) { target.innerHTML = '<div class="empty">查詢完成，沒有符合條件的資料。</div>'; return; }
+      const mode = el("resultMode").value || "photo";
+      target.innerHTML = items.map((item) => mode === "detail" ? renderDetailCard(item) : renderPhotoCard(item)).join("");
+      bindResultCheckboxEvents();
+    }
+    function updatePaging(total, page, totalPages) {
+      state.page = Number(page || 1);
+      state.totalPages = Number(totalPages || 1);
+      el("pageInfo").textContent = `第 ${state.page} / ${state.totalPages} 頁，共 ${Number(total || 0)} 筆`;
+      el("prevBtn").disabled = state.page <= 1; el("nextBtn").disabled = state.page >= state.totalPages;
+    }
+    async function searchRecords() {
+      try {
+        const filters = collectFilters();
+        setStatus("查詢中...");
+        const qs = buildQueryString(filters);
+        const res = await fetch(`/query-recognitions-advanced?${qs}`); const payload = await res.json();
+        if (!res.ok) throw new Error(payload.detail || "查詢失敗");
+        renderResults(payload.items || []); updatePaging(payload.total || 0, payload.page || 1, payload.total_pages || 1);
+        setStatus(`查詢完成，共 ${Number(payload.total || 0)} 筆。`);
+      } catch (err) { setStatus(`查詢失敗：${err.message || err}`, true); }
+    }
+    function clearQuery() {
+      el("deptMode").value = "single"; el("yearMode").value = "single"; el("teamMode").value = "single";
+      el("deptSingle").value = ""; el("yearSingle").value = ""; el("teamSingle").value = ""; el("name").value = "";
+      el("recognitionStatus").value = ""; el("activityScheduleId").value = ""; el("markType").value = "all";
+      el("takenStartTime").value = ""; el("takenEndTime").value = ""; el("startTime").value = ""; el("endTime").value = "";
+      el("detScoreMin").value = ""; el("detScoreMax").value = ""; el("recoCount").value = ""; el("resultMode").value = "photo";
+      Array.from(el("awardFilter").options).forEach((opt) => { opt.selected = false; });
+      Array.from(document.querySelectorAll("#deptChecklist input,#yearChecklist input,#teamChecklist input")).forEach((input) => { input.checked = false; });
+      syncModeWrap("deptMode", "deptSingle", "deptMultiWrap"); syncModeWrap("yearMode", "yearSingle", "yearMultiWrap"); syncModeWrap("teamMode", "teamSingle", "teamMultiWrap");
+      state.selectedUploadIds.clear(); refreshSelectedTags(); state.page = 1; setStatus("已清除查詢條件。");
+      renderResults([]); updatePaging(0, 1, 1);
+    }
+    function refreshSelectedTags() {
+      const deptValues = getCheckedValues("deptChecklist"); const yearValues = getCheckedValues("yearChecklist"); const teamValues = getCheckedValues("teamChecklist");
+      renderTags("deptSelectedTags", deptValues, (value) => { const input = el("deptChecklist").querySelector(`input[value="${CSS.escape(value)}"]`); if (input) input.checked = false; refreshSelectedTags(); });
+      renderTags("yearSelectedTags", yearValues, (value) => { const input = el("yearChecklist").querySelector(`input[value="${CSS.escape(value)}"]`); if (input) input.checked = false; refreshSelectedTags(); });
+      renderTags("teamSelectedTags", teamValues, (value) => { const input = el("teamChecklist").querySelector(`input[value="${CSS.escape(value)}"]`); if (input) input.checked = false; refreshSelectedTags(); });
+    }
+    async function postJson(url, body) {
+      const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.detail || `請求失敗（${res.status}）`);
+      return payload;
+    }
+    function requireSelectedUploadIds() {
+      const ids = Array.from(state.selectedUploadIds);
+      if (ids.length === 0) throw new Error("請先勾選至少一張照片。");
+      return ids;
+    }
+    async function deleteSelected() {
+      try {
+        const uploadIds = requireSelectedUploadIds();
+        if (!window.confirm(`確定刪除本頁勾選資料？共 ${uploadIds.length} 筆`)) return;
+        const payload = await postJson("/query-recognitions-advanced/logical-delete", { img_upload_ids: uploadIds, reason: "使用者於查詢頁刪除本頁勾選資料" });
+        setStatus(`刪除完成：img_upload ${payload.deleted_img_upload_count || 0} 筆，reco_result ${payload.deleted_count || 0} 筆。`);
+        state.selectedUploadIds.clear(); await searchRecords();
+      } catch (err) { setStatus(`刪除失敗：${err.message || err}`, true); }
+    }
+    async function deleteByFilter() {
+      try {
+        const filters = collectFilters();
+        const hasFilter = Boolean((filters.dept || []).length || filters.year !== null || (filters.years || []).length || (filters.team || []).length || filters.name || filters.start_time || filters.end_time || filters.taken_start_time || filters.taken_end_time || filters.det_score_min !== null || filters.det_score_max !== null || filters.reco_count !== null || filters.recognition_status || (filters.mark_type && filters.mark_type !== "all") || (filters.award_ids || []).length || filters.activity_schedule_id);
+        if (!hasFilter) throw new Error("請至少設定一個查詢條件。");
+        const preview = await postJson("/query-recognitions-advanced/logical-delete-by-filter/preview", filters);
+        const count = Number(preview.matched_count || 0);
+        if (count <= 0) throw new Error("沒有可刪除資料。");
+        if (!window.confirm(`將刪除符合條件資料 ${count} 筆，確定執行？`)) return;
+        const text = window.prompt("請輸入 DELETE 以確認跨頁刪除");
+        if (text !== "DELETE") throw new Error("已取消刪除。");
+        const payload = await postJson("/query-recognitions-advanced/logical-delete-by-filter", { ...filters, reason: "使用者於查詢頁刪除跨頁資料" });
+        setStatus(`跨頁刪除完成：img_upload ${payload.deleted_img_upload_count || 0} 筆，reco_result ${payload.deleted_count || 0} 筆。`);
+        state.selectedUploadIds.clear(); state.page = 1; await searchRecords();
+      } catch (err) { setStatus(`跨頁刪除失敗：${err.message || err}`, true); }
+    }
+    async function markAward(isRemove = false) {
+      try {
+        const uploadIds = requireSelectedUploadIds();
+        const awardIds = Array.from(el("awardMarkSelect").selectedOptions || []).map((opt) => Number(opt.value)).filter(Number.isFinite);
+        const url = isRemove ? "/query-recognitions-advanced/unmark-award" : "/query-recognitions-advanced/mark-award";
+        const payload = await postJson(url, { img_upload_ids: uploadIds, award_ids: awardIds });
+        if (isRemove) setStatus(`已移除獎項標記：${payload.deleted_count || 0} 筆。`); else setStatus(`已標記獎項：更新 ${payload.updated_count || 0} 筆。`);
+        await searchRecords();
+      } catch (err) { setStatus(`獎項標記失敗：${err.message || err}`, true); }
+    }
+    async function markVideo(isVideoPick) {
+      try {
+        const uploadIds = requireSelectedUploadIds();
+        const payload = await postJson("/query-recognitions-advanced/mark-video", { img_upload_ids: uploadIds, is_video_pick: isVideoPick ? 1 : 0 });
+        setStatus(`影片標記更新完成：${payload.updated_count || 0} 筆。`);
+        await searchRecords();
+      } catch (err) { setStatus(`影片標記失敗：${err.message || err}`, true); }
+    }
+    async function exportSelected() {
+      try {
+        const uploadIds = requireSelectedUploadIds();
+        const payload = await postJson("/query-recognitions-advanced/export-selected", { img_upload_ids: uploadIds, delivery_mode: el("deliveryMode").value, photo_variant: el("photoVariant").value });
+        const parts = [`job_id：${safeText(payload.job_id, "")}`, `成功：${Number(payload.success_count || 0)}，略過：${Number(payload.skipped_count || 0)}，失敗：${Number(payload.failed_count || 0)}`];
+        if (payload.download_url) parts.push(`<a href="${payload.download_url}" target="_blank">下載 ZIP</a>`);
+        if (payload.export_folder_host) parts.push(`輸出資料夾：${payload.export_folder_host}`);
+        el("exportResult").innerHTML = parts.join("<br>");
+        setStatus("匯出完成。");
+      } catch (err) { setStatus(`匯出失敗：${err.message || err}`, true); }
+    }
+    function togglePageSelection(enable) {
+      const checkboxes = Array.from(document.querySelectorAll(".row-check"));
+      checkboxes.forEach((input) => {
+        const id = Number(input.dataset.uploadId || 0);
+        if (!id) return;
+        input.checked = !!enable;
+        if (enable) state.selectedUploadIds.add(id); else state.selectedUploadIds.delete(id);
+      });
+    }
+    function bindBaseEvents() {
+      el("deptMode").addEventListener("change", () => syncModeWrap("deptMode", "deptSingle", "deptMultiWrap"));
+      el("yearMode").addEventListener("change", () => syncModeWrap("yearMode", "yearSingle", "yearMultiWrap"));
+      el("teamMode").addEventListener("change", () => syncModeWrap("teamMode", "teamSingle", "teamMultiWrap"));
+      el("searchBtn").addEventListener("click", async () => { state.page = 1; await searchRecords(); });
+      el("clearBtn").addEventListener("click", clearQuery);
+      el("prevBtn").addEventListener("click", async () => { if (state.page <= 1) return; state.page -= 1; await searchRecords(); });
+      el("nextBtn").addEventListener("click", async () => { if (state.page >= state.totalPages) return; state.page += 1; await searchRecords(); });
+      el("selectPageBtn").addEventListener("click", () => togglePageSelection(true));
+      el("clearSelectBtn").addEventListener("click", () => togglePageSelection(false));
+      el("deleteSelectedBtn").addEventListener("click", deleteSelected);
+      el("deleteByFilterBtn").addEventListener("click", deleteByFilter);
+      el("markAwardBtn").addEventListener("click", () => markAward(false));
+      el("unmarkAwardBtn").addEventListener("click", () => markAward(true));
+      el("markVideoBtn").addEventListener("click", () => markVideo(true));
+      el("unmarkVideoBtn").addEventListener("click", () => markVideo(false));
+      el("exportSelectedBtn").addEventListener("click", exportSelected);
+      el("deptSelectAllBtn").addEventListener("click", () => { Array.from(el("deptChecklist").querySelectorAll("input")).forEach((input) => { input.checked = true; }); refreshSelectedTags(); });
+      el("deptClearAllBtn").addEventListener("click", () => { Array.from(el("deptChecklist").querySelectorAll("input")).forEach((input) => { input.checked = false; }); refreshSelectedTags(); });
+      el("yearSelectAllBtn").addEventListener("click", () => { Array.from(el("yearChecklist").querySelectorAll("input")).forEach((input) => { input.checked = true; }); refreshSelectedTags(); });
+      el("yearClearAllBtn").addEventListener("click", () => { Array.from(el("yearChecklist").querySelectorAll("input")).forEach((input) => { input.checked = false; }); refreshSelectedTags(); });
+      el("teamSelectAllBtn").addEventListener("click", () => { Array.from(el("teamChecklist").querySelectorAll("input")).forEach((input) => { input.checked = true; }); refreshSelectedTags(); });
+      el("teamClearAllBtn").addEventListener("click", () => { Array.from(el("teamChecklist").querySelectorAll("input")).forEach((input) => { input.checked = false; }); refreshSelectedTags(); });
+      ["deptChecklist", "yearChecklist", "teamChecklist"].forEach((id) => { el(id).addEventListener("change", refreshSelectedTags); });
+      el("nameScoreModalCloseBtn").addEventListener("click", closeNameScoreModal);
+      el("nameScoreModal").addEventListener("click", (evt) => {
+        if (evt.target && evt.target.id === "nameScoreModal") closeNameScoreModal();
+      });
+      el("annotatedNameModalCloseBtn").addEventListener("click", closeAnnotatedNameModal);
+      el("annotatedNameModal").addEventListener("click", (evt) => {
+        if (evt.target && evt.target.id === "annotatedNameModal") closeAnnotatedNameModal();
+      });
+    }
+    async function init() {
+      try {
+        bindBaseEvents();
+        syncModeWrap("deptMode", "deptSingle", "deptMultiWrap");
+        syncModeWrap("yearMode", "yearSingle", "yearMultiWrap");
+        syncModeWrap("teamMode", "teamSingle", "teamMultiWrap");
+        await loadFilterOptions();
+        await loadActivityOptions();
+        await loadAwardOptions();
+        refreshSelectedTags();
+        renderResults([]);
+        updatePaging(0, 1, 1);
+        setStatus("頁面載入完成，請開始查詢。");
+      } catch (err) {
+        setStatus(`頁面初始化失敗：${err.message || err}`, true);
+      }
+    }
+    init();
+  </script>
+</body>
+</html>

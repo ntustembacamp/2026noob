@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>&#20154;&#21729;&#36039;&#26009;&#26597;&#35426;&#33287;&#32173;&#35703;</title>
+  <style>
+    :root { --bg:#f2efe8; --panel:#fffdfa; --ink:#1f2937; --muted:#6b7280; --line:#d8cfbf; --accent:#7c2d12; --accent2:#0f766e; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:"Segoe UI","Noto Sans TC",sans-serif; color:var(--ink); background:linear-gradient(180deg,#e6ddcf,var(--bg)); min-height:100vh; }
+    .wrap { max-width:1380px; margin:0 auto; padding:32px 20px 56px; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:24px; padding:24px; box-shadow:0 18px 46px rgba(41,33,18,.08); }
+    .topbar { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:16px; }
+    h1 { margin:0 0 8px; font-size:34px; }
+    h2 { margin:0 0 12px; font-size:22px; }
+    p,label { color:var(--muted); line-height:1.7; }
+    .actions { display:flex; flex-wrap:wrap; gap:12px; }
+    .section { margin-top:20px; padding:20px; border:1px solid #ece3d4; border-radius:20px; background:#fffaf4; }
+    .filters { display:grid; grid-template-columns:repeat(6,minmax(110px,1fr)); gap:12px; align-items:center; }
+    input, select, button, a.link-button { width:100%; border-radius:14px; border:1px solid var(--line); padding:12px 14px; font-size:15px; background:white; }
+    button, a.link-button { border:0; background:linear-gradient(135deg,var(--accent),var(--accent2)); color:white; cursor:pointer; font-weight:700; text-align:center; text-decoration:none; }
+    .secondary { background:#e8f4f1; color:#0f766e !important; }
+    .status { margin-top:14px; padding:14px 16px; border-radius:14px; background:#eef8f6; color:#0f766e; white-space:pre-wrap; }
+    .status.error { background:#fff1f2; color:#be123c; }
+    .summary { display:grid; grid-template-columns:repeat(6,minmax(120px,1fr)); gap:12px; margin-top:16px; }
+    .summary .card { padding:12px 14px; border-radius:16px; background:white; border:1px solid #eadfcb; }
+    .summary .card span { display:block; color:var(--muted); font-size:12px; }
+    .summary .card strong { display:block; margin-top:6px; font-size:20px; }
+    .table-wrap { margin-top:16px; overflow:auto; }
+    table { width:100%; border-collapse:collapse; background:white; border-radius:16px; overflow:hidden; }
+    th, td { padding:10px 8px; border-bottom:1px solid #eee4d5; text-align:left; vertical-align:top; }
+    th button { background:none; color:#1f2937; padding:0; border:0; text-align:left; cursor:pointer; font-weight:700; }
+    .thumb { width:88px; height:88px; border-radius:12px; object-fit:cover; background:#eee2d2; }
+    .pager { display:flex; gap:12px; align-items:center; margin-top:12px; }
+    .mono { font-family:Consolas,"Courier New",monospace; font-size:12px; white-space:pre-wrap; }
+    .row-actions { display:flex; flex-wrap:wrap; gap:8px; }
+    .row-actions button { width:auto; min-width:88px; padding:8px 12px; }
+    @media (max-width: 960px) {
+      .filters { grid-template-columns:repeat(2,minmax(140px,1fr)); }
+      .summary { grid-template-columns:repeat(2,minmax(140px,1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <div class="topbar">
+        <div>
+          <h1>&#20154;&#21729;&#36039;&#26009;&#26597;&#35426;&#33287;&#32173;&#35703;</h1>
+          <p>&#26597;&#35426; base &#20154;&#21729;&#20027;&#27284;&#12289;&#27298;&#35222;&#20358;&#28304;&#29031;&#29255;&#12289;&#26356;&#26032;&#25110;&#21034;&#38500;&#20154;&#21729;&#36039;&#26009;&#65292;&#20006;&#31649;&#29702; embedding &#29305;&#24501;&#24235;&#29376;&#24907;&#12290;</p>
+        </div>
+        <div class="actions">
+          <a class="link-button secondary" href="/">&#22238;&#21040;&#39318;&#38913;</a>
+          <a class="link-button secondary" href="/admin-batch-ui">&#21069;&#24448;&#20154;&#21729;&#36039;&#26009;&#21450;&#29305;&#24501;&#24314;&#32622;</a>
+        </div>
+      </div>
+
+      <section class="section">
+        <h2>base &#20154;&#21729;&#20027;&#27284;</h2>
+        <div class="filters">
+          <select id="baseDept"><option value="">&#20840;&#37096;&#31995;&#25152;</option></select>
+          <select id="baseYear"><option value="">&#20840;&#37096;&#32026;&#21029;</option></select>
+          <select id="baseTeam"><option value="">&#20840;&#37096;&#23567;&#38538;</option></select>
+          <input id="baseName" placeholder="&#22995;&#21517;" />
+          <select id="basePageSize">
+            <option value="10">&#27599;&#38913; 10 &#31558;</option>
+            <option value="20">&#27599;&#38913; 20 &#31558;</option>
+            <option value="50">&#27599;&#38913; 50 &#31558;</option>
+            <option value="100">&#27599;&#38913; 100 &#31558;</option>
+          </select>
+          <button id="baseSearchBtn" type="button">&#26597;&#35426;&#20840;&#37096;</button>
+        </div>
+        <div class="actions" style="margin-top:12px;">
+          <button id="baseClearBtn" type="button" class="secondary">&#28165;&#38500;&#26597;&#35426;</button>
+          <button id="baseDeleteFilteredBtn" type="button">&#21034;&#38500;&#26597;&#35426;&#32080;&#26524;&#36039;&#26009;</button>
+          <button id="baseDeleteAllBtn" type="button">&#21034;&#38500;&#20840;&#37096;&#36039;&#26009;</button>
+        </div>
+        <div id="baseStatus" class="status">&#35531;&#20808;&#26597;&#35426; base &#20154;&#21729;&#20027;&#27284;&#12290;</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th><button data-section="base" data-key="photo" type="button">&#29031;&#29255;</button></th>
+                <th><button data-section="base" data-key="dept" type="button">&#31995;&#25152;</button></th>
+                <th><button data-section="base" data-key="year" type="button">&#32026;&#21029;</button></th>
+                <th><button data-section="base" data-key="team" type="button">&#23567;&#38538;</button></th>
+                <th><button data-section="base" data-key="name" type="button">&#22995;&#21517;</button></th>
+                <th><button data-section="base" data-key="phash" type="button">pHash</button></th>
+                <th><button data-section="base" data-key="file_name" type="button">&#27284;&#21517;</button></th>
+                <th><button data-section="base" data-key="create_time" type="button">&#24314;&#31435;&#26178;&#38291;</button></th>
+                <th><button data-section="base" data-key="update_time" type="button">&#26356;&#26032;&#26178;&#38291;</button></th>
+                <th>&#25805;&#20316;</th>
+              </tr>
+            </thead>
+            <tbody id="baseRows"><tr><td colspan="10">尚未查詢資料。</td></tr></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button id="basePrevBtn" type="button">&#19978;&#19968;&#38913;</button>
+          <span id="basePageInfo">&#31532; 1 &#38913;</span>
+          <button id="baseNextBtn" type="button">&#19979;&#19968;&#38913;</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>&#29031;&#29255;&#27404;&#20301;&#22238;&#22635;&#24037;&#20855;</h2>
+        <p>&#29992;&#26044;&#35036;&#40778;&#33290;&#36039;&#26009;&#65306;&#27284;&#26696;&#24314;&#31435;&#26178;&#38291; (photo_file_time)&#12289;photo_uuid&#33287; reco_result &#36861;&#28335;&#27404;&#20301;&#12290;</p>
+        <div class="actions" style="margin-top:12px;">
+          <button id="backfillFileTimeBtn" type="button">&#22238;&#22635; photo_file_time</button>
+          <button id="backfillPhotoUuidBtn" type="button">&#22238;&#22635; photo_uuid</button>
+          <button id="backfillRecoMetaBtn" type="button">&#22238;&#22635; reco_result &#36861;&#28335;&#27404;&#20301;</button>
+        </div>
+        <div id="backfillStatus" class="status">&#35531;&#36984;&#25799;&#38656;&#35201;&#22519;&#34892;&#30340;&#22238;&#22635;&#38917;&#30446;&#12290;</div>
+      </section>
+
+      <section class="section">
+        <h2>embedding &#29305;&#24501;&#24235;&#31649;&#29702;</h2>
+        <div class="filters">
+          <select id="embDept"><option value="">&#20840;&#37096;&#31995;&#25152;</option></select>
+          <select id="embYear"><option value="">&#20840;&#37096;&#32026;&#21029;</option></select>
+          <select id="embTeam"><option value="">&#20840;&#37096;&#23567;&#38538;</option></select>
+          <input id="embName" placeholder="&#22995;&#21517;" />
+          <select id="embStatus">
+            <option value="">&#20840;&#37096;&#29376;&#24907;</option>
+            <option value="ready">ready</option>
+            <option value="missing_meta">missing_meta</option>
+            <option value="deleted">deleted</option>
+          </select>
+          <select id="embPageSize">
+            <option value="10">&#27599;&#38913; 10 &#31558;</option>
+            <option value="20">&#27599;&#38913; 20 &#31558;</option>
+            <option value="50">&#27599;&#38913; 50 &#31558;</option>
+            <option value="100">&#27599;&#38913; 100 &#31558;</option>
+          </select>
+        </div>
+        <div class="actions" style="margin-top:12px;">
+          <button id="embSearchBtn" type="button">&#26597;&#35426; embedding</button>
+          <button id="embClearBtn" type="button" class="secondary">&#28165;&#38500;&#26597;&#35426;</button>
+          <button id="embRebuildBtn" type="button">&#20840;&#37096;&#37325;&#24314; embedding</button>
+        </div>
+        <div id="embStatusBox" class="status">&#35531;&#20808;&#26597;&#35426; embedding &#29376;&#24907;&#12290;</div>
+        <div id="embSummary" class="summary"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th><button data-section="emb" data-key="person_label" type="button">&#20154;&#21729;&#27161;&#31844;</button></th>
+                <th><button data-section="emb" data-key="status" type="button">&#29376;&#24907;</button></th>
+                <th><button data-section="emb" data-key="embedding_exists" type="button">embedding_exists</button></th>
+                <th><button data-section="emb" data-key="face_count" type="button">face_count</button></th>
+                <th><button data-section="emb" data-key="runtime_present" type="button">runtime_present</button></th>
+                <th><button data-section="emb" data-key="error_message" type="button">&#37679;&#35492;&#35338;&#24687;</button></th>
+                <th><button data-section="emb" data-key="embedding_update_time" type="button">&#26356;&#26032;&#26178;&#38291;</button></th>
+                <th>&#25805;&#20316;</th>
+              </tr>
+            </thead>
+            <tbody id="embRows"><tr><td colspan="8">尚未查詢資料。</td></tr></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button id="embPrevBtn" type="button">&#19978;&#19968;&#38913;</button>
+          <span id="embPageInfo">&#31532; 1 &#38913;</span>
+          <button id="embNextBtn" type="button">&#19979;&#19968;&#38913;</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const TXT = {
+      noPhoto: '\u7121\u7167\u7247',
+      noBaseData: '\u67e5\u7121\u8cc7\u6599\u3002',
+      noEmbData: '\u67e5\u7121\u8cc7\u6599\u3002',
+      allDept: '\u5168\u90e8\u7cfb\u6240',
+      allYear: '\u5168\u90e8\u7d1a\u5225',
+      allTeam: '\u5168\u90e8\u5c0f\u968a',
+      basePrompt: '\u8acb\u5148\u67e5\u8a62 base \u4eba\u54e1\u4e3b\u6a94\u3002',
+      embPrompt: '\u8acb\u5148\u67e5\u8a62 embedding \u7279\u5fb5\u5eab\u7ba1\u7406\u8cc7\u6599\u3002',
+      firstPage: '\u7b2c 1 \u9801',
+      pageInfo: (page, totalPages, total) => `\u7b2c ${page} / ${totalPages} \u9801\uff0c\u5171 ${total} \u7b46`,
+      baseSearchDone: (total) => `\u67e5\u8a62\u5b8c\u6210\uff0c\u5171 ${total} \u7b46\u3002`,
+      embSearchDone: (total) => `\u67e5\u8a62\u5b8c\u6210\uff0c\u5171 ${total} \u7b46\u3002`,
+      updateDone: (label) => `\u66f4\u65b0\u5b8c\u6210\uff1a${label || ''}`,
+      deleteDone: (label) => `\u5df2\u522a\u9664\uff1a${label || ''}`,
+      deleteEmbDone: (label) => `\u5df2\u522a\u9664 embedding\uff1a${label || ''}`,
+      deleteAllDone: (count) => `\u5168\u90e8\u522a\u9664\u5b8c\u6210\uff0c\u5171\u522a\u9664 ${count} \u7b46\u3002`,
+      rebuildDone: (count) => `\u91cd\u5efa\u5b8c\u6210\uff0c\u5171 ${count} \u7b46\u3002`,
+      askDelete: (label) => `\u78ba\u5b9a\u8981\u522a\u9664 ${label} \u55ce\uff1f`,
+      askDeleteEmb: (label) => `\u78ba\u5b9a\u8981\u522a\u9664 ${label} \u7684 embedding \u55ce\uff1f`,
+      askDeleteWarn: '\u9019\u500b\u52d5\u4f5c\u6703\u540c\u6b65\u66f4\u65b0\u6b77\u53f2\u8fa8\u8b58\u7d50\u679c\u8207 embedding\uff0c\u662f\u5426\u7e7c\u7e8c\uff1f',
+      askDeleteAll: '\u78ba\u5b9a\u8981\u5168\u90e8\u522a\u9664 base \u4eba\u54e1\u4e3b\u6a94\u55ce\uff1f',
+      askDeleteAllWarn: '\u9019\u500b\u52d5\u4f5c\u6703\u540c\u6b65\u6e05\u9664\u6b77\u53f2\u8fa8\u8b58\u7d50\u679c\u4e2d\u7684\u6240\u6709\u4eba\u540d\u4e26\u91cd\u5efa embedding\uff0c\u662f\u5426\u7e7c\u7e8c\uff1f',
+      askDeleteFiltered: '\u78ba\u5b9a\u8981\u522a\u9664\u76ee\u524d\u67e5\u8a62\u7d50\u679c\u8cc7\u6599\u55ce\uff1f',
+      askDeleteFilteredWarn: '\u5c07\u53ea\u522a\u9664\u76ee\u524d base \u67e5\u8a62\u7d50\u679c\u4e2d\u7684\u4eba\u54e1\uff0c\u4e26\u540c\u6b65\u66f4\u65b0\u6b77\u53f2\u8fa8\u8b58\u8207 embedding\uff0c\u662f\u5426\u7e7c\u7e8c\uff1f',
+      askRebuild: '\u78ba\u5b9a\u8981\u5168\u90e8\u91cd\u5efa embedding \u55ce\uff1f',
+      errBaseSearch: '\u67e5\u8a62 base \u4eba\u54e1\u4e3b\u6a94\u5931\u6557',
+      errEmbSearch: '\u67e5\u8a62 embedding \u7ba1\u7406\u8cc7\u6599\u5931\u6557',
+      errUpdate: '\u66f4\u65b0\u4eba\u54e1\u4e3b\u6a94\u5931\u6557',
+      errDelete: '\u522a\u9664\u4eba\u54e1\u4e3b\u6a94\u5931\u6557',
+      errDeleteFiltered: '\u522a\u9664\u67e5\u8a62\u7d50\u679c\u8cc7\u6599\u5931\u6557',
+      errBackfill: '\u57f7\u884c\u56de\u586b\u5931\u6557',
+      errDeleteEmb: '\u522a\u9664 embedding \u5931\u6557',
+      errDeleteAll: '\u5168\u90e8\u522a\u9664 base \u4eba\u54e1\u4e3b\u6a94\u5931\u6557',
+      errRebuild: '\u91cd\u5efa embedding \u5931\u6557',
+      labels: {
+        baseTotal: 'base \u7e3d\u7b46\u6578',
+        metaTotal: 'meta \u7e3d\u7b46\u6578',
+        readyTotal: 'ready \u7b46\u6578',
+        deletedTotal: 'deleted \u7b46\u6578',
+        issueTotal: '\u7570\u5e38\u7b46\u6578',
+        runtimePklTotal: 'runtime .pkl \u7b46\u6578',
+        yes: '\u662f',
+        no: '\u5426',
+        edit: '\u7de8\u8f2f',
+        delete: '\u522a\u9664',
+        deleteEmbedding: '\u522a\u9664 embedding',
+      },
+    };
+
+    const state = {
+      baseItems: [],
+      baseSortKey: 'year',
+      baseSortDir: 'desc',
+      basePage: 1,
+      embItems: [],
+      embSortKey: 'person_label',
+      embSortDir: 'asc',
+      embPage: 1,
+    };
+
+    const ids = {
+      baseDept: document.getElementById('baseDept'),
+      baseYear: document.getElementById('baseYear'),
+      baseTeam: document.getElementById('baseTeam'),
+      baseName: document.getElementById('baseName'),
+      basePageSize: document.getElementById('basePageSize'),
+      baseSearchBtn: document.getElementById('baseSearchBtn'),
+      baseClearBtn: document.getElementById('baseClearBtn'),
+      baseDeleteFilteredBtn: document.getElementById('baseDeleteFilteredBtn'),
+      baseDeleteAllBtn: document.getElementById('baseDeleteAllBtn'),
+      baseStatus: document.getElementById('baseStatus'),
+      baseRows: document.getElementById('baseRows'),
+      basePrevBtn: document.getElementById('basePrevBtn'),
+      baseNextBtn: document.getElementById('baseNextBtn'),
+      basePageInfo: document.getElementById('basePageInfo'),
+      embDept: document.getElementById('embDept'),
+      embYear: document.getElementById('embYear'),
+      embTeam: document.getElementById('embTeam'),
+      embName: document.getElementById('embName'),
+      embStatus: document.getElementById('embStatus'),
+      embPageSize: document.getElementById('embPageSize'),
+      embSearchBtn: document.getElementById('embSearchBtn'),
+      embClearBtn: document.getElementById('embClearBtn'),
+      embRebuildBtn: document.getElementById('embRebuildBtn'),
+      embStatusBox: document.getElementById('embStatusBox'),
+      embRows: document.getElementById('embRows'),
+      embPrevBtn: document.getElementById('embPrevBtn'),
+      embNextBtn: document.getElementById('embNextBtn'),
+      embPageInfo: document.getElementById('embPageInfo'),
+      embSummary: document.getElementById('embSummary'),
+      backfillFileTimeBtn: document.getElementById('backfillFileTimeBtn'),
+      backfillPhotoUuidBtn: document.getElementById('backfillPhotoUuidBtn'),
+      backfillRecoMetaBtn: document.getElementById('backfillRecoMetaBtn'),
+      backfillStatus: document.getElementById('backfillStatus'),
+    };
+
+    function setStatus(el, msg, isError) {
+      el.textContent = msg;
+      el.className = isError ? 'status error' : 'status';
+    }
+
+    function setOptions(select, values, placeholder) {
+      const currentValue = select.value;
+      const items = [`<option value="">${placeholder}</option>`];
+      const collator = new Intl.Collator('zh-Hant-u-co-stroke', { numeric: true, sensitivity: 'base' });
+      const sortedValues = [...(values || [])].sort((a, b) => collator.compare(String(a ?? ''), String(b ?? '')));
+      sortedValues.forEach((value) => {
+        const safe = String(value ?? '');
+        items.push(`<option value="${safe}">${safe}</option>`);
+      });
+      select.innerHTML = items.join('');
+      if ([...select.options].some((option) => option.value === currentValue)) {
+        select.value = currentValue;
+      }
+    }
+
+    function errorText(error, fallback) {
+      if (!error) return fallback;
+      if (typeof error === 'string') return error;
+      if (typeof error.message === 'string' && error.message && error.message !== '[object Object]') return error.message;
+      try { return JSON.stringify(error); } catch (jsonError) { return String(error || fallback); }
+    }
+
+    function buildParams(values) {
+      const params = new URLSearchParams();
+      Object.entries(values || {}).forEach(([key, value]) => {
+        if (value === null || value === undefined) return;
+        const text = String(value).trim();
+        if (!text) return;
+        params.set(key, text);
+      });
+      return params;
+    }
+
+    function detailText(detail, fallback) {
+      if (typeof detail === 'string' && detail) return detail;
+      if (detail !== null && detail !== undefined) {
+        try { return JSON.stringify(detail); } catch (jsonError) { return fallback; }
+      }
+      return fallback;
+    }
+
+    function getValue(value) {
+      return value === null || value === undefined ? '' : value;
+    }
+
+    function sortItems(items, key, dir) {
+      return [...items].sort((a, b) => {
+        const av = getValue(a[key]);
+        const bv = getValue(b[key]);
+        if (av === bv) return 0;
+        if (dir === 'asc') return av > bv ? 1 : -1;
+        return av < bv ? 1 : -1;
+      });
+    }
+
+    function paginate(items, page, pageSize) {
+      const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
+      const safePage = Math.min(Math.max(page, 1), totalPages);
+      const start = (safePage - 1) * pageSize;
+      return { page: safePage, totalPages, items: items.slice(start, start + pageSize) };
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    async function loadFilterOptions(deptValue = '', yearValue = '') {
+      const params = buildParams({ dept: deptValue, year: yearValue });
+      const response = await fetch(`/query-filter-options?${params.toString()}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(detailText(payload.detail, TXT.errBaseSearch));
+      setOptions(ids.baseDept, payload.dept_options || [], TXT.allDept);
+      setOptions(ids.baseYear, payload.year_options || [], TXT.allYear);
+      setOptions(ids.baseTeam, payload.team_options || [], TXT.allTeam);
+      setOptions(ids.embDept, payload.dept_options || [], TXT.allDept);
+      setOptions(ids.embYear, payload.year_options || [], TXT.allYear);
+      setOptions(ids.embTeam, payload.team_options || [], TXT.allTeam);
+    }
+
+    function syncEmbeddingFiltersFromBase() {
+      ids.embDept.value = ids.baseDept.value;
+      ids.embYear.value = ids.baseYear.value;
+      ids.embTeam.value = ids.baseTeam.value;
+      ids.embName.value = ids.baseName.value;
+    }
+
+    function resetBaseSection() {
+      ids.baseDept.value = '';
+      ids.baseYear.value = '';
+      ids.baseTeam.value = '';
+      ids.baseName.value = '';
+      ids.basePageSize.value = '10';
+      state.baseItems = [];
+      state.basePage = 1;
+      ids.baseRows.innerHTML = '<tr><td colspan="10">尚未查詢資料。</td></tr>';
+      ids.basePageInfo.textContent = TXT.firstPage;
+      setStatus(ids.baseStatus, TXT.basePrompt, false);
+    }
+
+    function resetEmbeddingSection() {
+      ids.embDept.value = '';
+      ids.embYear.value = '';
+      ids.embTeam.value = '';
+      ids.embName.value = '';
+      ids.embStatus.value = '';
+      ids.embPageSize.value = '10';
+      state.embItems = [];
+      state.embPage = 1;
+      ids.embRows.innerHTML = '<tr><td colspan="8">尚未查詢資料。</td></tr>';
+      ids.embPageInfo.textContent = TXT.firstPage;
+      ids.embSummary.innerHTML = '';
+      setStatus(ids.embStatusBox, TXT.embPrompt, false);
+    }
+
+    function photoPreviewUrl(item) {
+      if (!item.file_path || !item.file_name) return '';
+      const fullPath = `${String(item.file_path).replace(/[\\\\]/g, '/')}/${item.file_name}`;
+      return `/preview-image?file_path=${encodeURIComponent(fullPath)}`;
+    }
+
+    function renderBase() {
+      const pageSize = Number(ids.basePageSize.value || 10);
+      const sorted = sortItems(state.baseItems, state.baseSortKey, state.baseSortDir);
+      const paged = paginate(sorted, state.basePage, pageSize);
+      state.basePage = paged.page;
+      ids.basePageInfo.textContent = TXT.pageInfo(paged.page, paged.totalPages, state.baseItems.length);
+      if (!paged.items.length) {
+        ids.baseRows.innerHTML = '<tr><td colspan="10">查無資料。</td></tr>';
+        return;
+      }
+      ids.baseRows.innerHTML = paged.items.map((item) => {
+        const previewSrc = photoPreviewUrl(item);
+        const preview = previewSrc
+          ? `<a href="${previewSrc}" target="_blank" rel="noopener"><img class="thumb" src="${previewSrc}" alt="&#29031;&#29255;" /></a>`
+          : TXT.noPhoto;
+        return `
+          <tr>
+            <td>${preview}</td>
+            <td>${escapeHtml(item.dept)}</td>
+            <td>${escapeHtml(item.year)}</td>
+            <td>${escapeHtml(item.team)}</td>
+            <td>${escapeHtml(item.name)}</td>
+            <td class="mono">${escapeHtml(item.phash)}</td>
+            <td>${escapeHtml(item.file_name)}</td>
+            <td>${escapeHtml(item.create_time)}</td>
+            <td>${escapeHtml(item.update_time)}</td>
+            <td>
+              <div class="row-actions">
+                <button type="button" class="js-edit-person" data-id="${item.id}">${TXT.labels.edit}</button>
+                <button type="button" class="js-delete-person" data-id="${item.id}" data-label="${escapeHtml(item.person_label || '')}">${TXT.labels.delete}</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function renderEmbedding() {
+      const pageSize = Number(ids.embPageSize.value || 10);
+      const sorted = sortItems(state.embItems, state.embSortKey, state.embSortDir);
+      const paged = paginate(sorted, state.embPage, pageSize);
+      state.embPage = paged.page;
+      ids.embPageInfo.textContent = TXT.pageInfo(paged.page, paged.totalPages, state.embItems.length);
+      if (!paged.items.length) {
+        ids.embRows.innerHTML = '<tr><td colspan="8">查無資料。</td></tr>';
+        return;
+      }
+      ids.embRows.innerHTML = paged.items.map((item) => `
+        <tr>
+          <td>${escapeHtml(item.person_label)}</td>
+          <td>${escapeHtml(item.status)}</td>
+          <td>${escapeHtml(item.embedding_exists ?? 0)}</td>
+          <td>${escapeHtml(item.face_count ?? 0)}</td>
+          <td>${item.runtime_present ? TXT.labels.yes : TXT.labels.no}</td>
+          <td>${escapeHtml(item.error_message)}</td>
+          <td>${escapeHtml(item.embedding_update_time)}</td>
+          <td><button type="button" class="js-delete-embedding" data-base-id="${item.base_id}" data-label="${escapeHtml(item.person_label || '')}">${TXT.labels.deleteEmbedding}</button></td>
+        </tr>
+      `).join('');
+    }
+
+    function renderSummary(summary) {
+      const cards = [
+        ['base_total', TXT.labels.baseTotal],
+        ['meta_total', TXT.labels.metaTotal],
+        ['ready_total', TXT.labels.readyTotal],
+        ['deleted_total', TXT.labels.deletedTotal],
+        ['issue_total', TXT.labels.issueTotal],
+        ['runtime_pkl_total', TXT.labels.runtimePklTotal],
+      ];
+      ids.embSummary.innerHTML = cards.map(([key, label]) => `<div class="card"><span>${label}</span><strong>${summary[key] ?? 0}</strong></div>`).join('');
+    }
+
+    async function searchBase() {
+      const params = buildParams({
+        dept: ids.baseDept.value || '',
+        year: ids.baseYear.value || '',
+        team: ids.baseTeam.value || '',
+        name: ids.baseName.value || '',
+        limit: '500',
+      });
+      const response = await fetch(`/admin/base-search?${params.toString()}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(detailText(payload.detail, TXT.errBaseSearch));
+      state.baseItems = payload.items || [];
+      state.basePage = 1;
+      setStatus(ids.baseStatus, TXT.baseSearchDone(payload.total || 0), false);
+      renderBase();
+    }
+
+    async function searchEmbedding() {
+      const params = buildParams({
+        dept: ids.embDept.value || '',
+        year: ids.embYear.value || '',
+        team: ids.embTeam.value || '',
+        name: ids.embName.value || '',
+        status: ids.embStatus.value || '',
+        limit: '500',
+      });
+      const response = await fetch(`/admin/embedding-search?${params.toString()}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(detailText(payload.detail, TXT.errEmbSearch));
+      state.embItems = payload.items || [];
+      state.embPage = 1;
+      renderSummary(payload.summary || {});
+      setStatus(ids.embStatusBox, TXT.embSearchDone(payload.total || 0), false);
+      renderEmbedding();
+    }
+
+    async function searchBaseAndEmbedding() {
+      syncEmbeddingFiltersFromBase();
+      await searchBase();
+      await searchEmbedding();
+    }
+
+    async function editPerson(id) {
+      const target = state.baseItems.find((item) => item.id === id);
+      if (!target) return;
+      const dept = prompt('\u7cfb\u6240', target.dept || '');
+      if (dept === null) return;
+      const year = prompt('\u7d1a\u5225', target.year || '');
+      if (year === null) return;
+      const team = prompt('\u5c0f\u968a', target.team || '');
+      if (team === null) return;
+      const name = prompt('\u59d3\u540d', target.name || '');
+      if (name === null) return;
+      const response = await fetch('/admin/update-person', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, dept, year: Number(year), team, name }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(detailText(payload.detail, TXT.errUpdate));
+      setStatus(ids.baseStatus, TXT.updateDone(payload.new_label || ''), false);
+      await searchBase();
+      await searchEmbedding();
+    }
+
+    async function deletePerson(id, label) {
+      if (!confirm(TXT.askDelete(label))) return;
+      if (!confirm(TXT.askDeleteWarn)) return;
+      const response = await fetch('/admin/delete-person', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(detailText(payload.detail, TXT.errDelete));
+      setStatus(ids.baseStatus, TXT.deleteDone(payload.deleted_label || label), false);
+      await searchBaseAndEmbedding();
+    }
+
+    async function deleteFilteredBase() {
+      const idsToDelete = state.baseItems.map((item) => Number(item.id)).filter((id) => Number.isFinite(id) && id > 0);
+      if (!idsToDelete.length) {
+        setStatus(ids.baseStatus, TXT.noBaseData, false);
+        return;
+      }
+      if (!confirm(TXT.askDeleteFiltered)) return;
+      if (!confirm(TXT.askDeleteFilteredWarn)) return;
+      const response = await fetch('/admin/delete-filtered-persons', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: idsToDelete }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(detailText(payload.detail, TXT.errDeleteFiltered));
+      setStatus(ids.baseStatus, TXT.deleteAllDone(payload.deleted_base_count || 0), false);
+      await searchBaseAndEmbedding();
+    }
+
+    async function deleteEmbedding(baseId, label) {
+      if (!confirm(TXT.askDeleteEmb(label))) return;
+      const response = await fetch('/admin/embedding-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base_id: baseId }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(detailText(payload.detail, TXT.errDeleteEmb));
+      setStatus(ids.embStatusBox, TXT.deleteEmbDone(payload.person_label || label), false);
+      await searchEmbedding();
+    }
+
+    async function runBackfill(endpoint, label) {
+      setStatus(ids.backfillStatus, `\u57f7\u884c\u4e2d\uff1a${label}...`, false);
+      const response = await fetch(endpoint, { method: 'POST' });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(detailText(payload.detail, TXT.errBackfill));
+      setStatus(ids.backfillStatus, `${label}\u5b8c\u6210\uff1a${JSON.stringify(payload)}`, false);
+    }
+
+    ids.baseSearchBtn.addEventListener('click', async () => {
+      try { await searchBaseAndEmbedding(); } catch (error) { setStatus(ids.baseStatus, errorText(error, TXT.errBaseSearch), true); }
+    });
+
+    ids.baseClearBtn.addEventListener('click', async () => {
+      resetBaseSection();
+      resetEmbeddingSection();
+      try { await loadFilterOptions(); } catch (error) { setStatus(ids.baseStatus, errorText(error, TXT.errBaseSearch), true); }
+    });
+
+    ids.baseDeleteAllBtn.addEventListener('click', async () => {
+      if (!confirm(TXT.askDeleteAll)) return;
+      if (!confirm(TXT.askDeleteAllWarn)) return;
+      try {
+        const response = await fetch('/admin/delete-all-persons', { method: 'POST' });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(detailText(payload.detail, TXT.errDeleteAll));
+        setStatus(ids.baseStatus, TXT.deleteAllDone(payload.deleted_base_count || 0), false);
+        state.baseItems = [];
+        renderBase();
+        await searchEmbedding();
+      } catch (error) {
+        setStatus(ids.baseStatus, errorText(error, TXT.errDeleteAll), true);
+      }
+    });
+
+    ids.baseDeleteFilteredBtn.addEventListener('click', async () => {
+      try {
+        await deleteFilteredBase();
+      } catch (error) {
+        setStatus(ids.baseStatus, errorText(error, TXT.errDeleteFiltered), true);
+      }
+    });
+
+    ids.backfillFileTimeBtn.addEventListener('click', async () => {
+      try { await runBackfill('/admin/backfill-photo-file-time?limit=5000', 'photo_file_time \u56de\u586b'); }
+      catch (error) { setStatus(ids.backfillStatus, errorText(error, TXT.errBackfill), true); }
+    });
+
+    ids.backfillPhotoUuidBtn.addEventListener('click', async () => {
+      try { await runBackfill('/admin/backfill-photo-uuid?limit=5000', 'photo_uuid \u56de\u586b'); }
+      catch (error) { setStatus(ids.backfillStatus, errorText(error, TXT.errBackfill), true); }
+    });
+
+    ids.backfillRecoMetaBtn.addEventListener('click', async () => {
+      try { await runBackfill('/admin/backfill-reco-photo-meta?limit=50000', 'reco_result \u8ffd\u6eaf\u6b04\u4f4d\u56de\u586b'); }
+      catch (error) { setStatus(ids.backfillStatus, errorText(error, TXT.errBackfill), true); }
+    });
+
+    ids.embSearchBtn.addEventListener('click', async () => {
+      try { await searchEmbedding(); } catch (error) { setStatus(ids.embStatusBox, errorText(error, TXT.errEmbSearch), true); }
+    });
+
+    ids.embClearBtn.addEventListener('click', async () => {
+      resetEmbeddingSection();
+      try { await loadFilterOptions(); } catch (error) { setStatus(ids.embStatusBox, errorText(error, TXT.errEmbSearch), true); }
+    });
+
+    ids.embRebuildBtn.addEventListener('click', async () => {
+      if (!confirm(TXT.askRebuild)) return;
+      try {
+        const response = await fetch('/admin/embedding-rebuild', { method: 'POST' });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(detailText(payload.detail, TXT.errRebuild));
+        renderSummary(payload.summary || {});
+        setStatus(ids.embStatusBox, TXT.rebuildDone(payload.embedding_count || 0), false);
+        await searchEmbedding();
+      } catch (error) {
+        setStatus(ids.embStatusBox, errorText(error, TXT.errRebuild), true);
+      }
+    });
+
+    ids.basePrevBtn.addEventListener('click', () => {
+      state.basePage = Math.max(1, state.basePage - 1);
+      renderBase();
+    });
+
+    ids.baseNextBtn.addEventListener('click', () => {
+      state.basePage += 1;
+      renderBase();
+    });
+
+    ids.embPrevBtn.addEventListener('click', () => {
+      state.embPage = Math.max(1, state.embPage - 1);
+      renderEmbedding();
+    });
+
+    ids.embNextBtn.addEventListener('click', () => {
+      state.embPage += 1;
+      renderEmbedding();
+    });
+
+    document.querySelectorAll('th button[data-section]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const section = button.dataset.section;
+        const key = button.dataset.key;
+        if (section === 'base') {
+          state.baseSortDir = state.baseSortKey === key && state.baseSortDir === 'asc' ? 'desc' : 'asc';
+          state.baseSortKey = key;
+          renderBase();
+        }
+        if (section === 'emb') {
+          state.embSortDir = state.embSortKey === key && state.embSortDir === 'asc' ? 'desc' : 'asc';
+          state.embSortKey = key;
+          renderEmbedding();
+        }
+      });
+    });
+
+    ids.baseRows.addEventListener('click', async (event) => {
+      const editBtn = event.target.closest('.js-edit-person');
+      if (editBtn) {
+        try { await editPerson(Number(editBtn.dataset.id)); } catch (error) { setStatus(ids.baseStatus, errorText(error, TXT.errUpdate), true); }
+        return;
+      }
+      const deleteBtn = event.target.closest('.js-delete-person');
+      if (deleteBtn) {
+        try { await deletePerson(Number(deleteBtn.dataset.id), deleteBtn.dataset.label || ''); } catch (error) { setStatus(ids.baseStatus, errorText(error, TXT.errDelete), true); }
+      }
+    });
+
+    ids.embRows.addEventListener('click', async (event) => {
+      const deleteBtn = event.target.closest('.js-delete-embedding');
+      if (!deleteBtn) return;
+      try { await deleteEmbedding(Number(deleteBtn.dataset.baseId), deleteBtn.dataset.label || ''); } catch (error) { setStatus(ids.embStatusBox, errorText(error, TXT.errDeleteEmb), true); }
+    });
+
+    ids.baseDept.addEventListener('change', async () => {
+      try { await loadFilterOptions(ids.baseDept.value, ids.baseYear.value); } catch (error) { setStatus(ids.baseStatus, errorText(error, TXT.errBaseSearch), true); }
+    });
+    ids.baseYear.addEventListener('change', async () => {
+      try { await loadFilterOptions(ids.baseDept.value, ids.baseYear.value); } catch (error) { setStatus(ids.baseStatus, errorText(error, TXT.errBaseSearch), true); }
+    });
+    ids.embDept.addEventListener('change', async () => {
+      try { await loadFilterOptions(ids.embDept.value, ids.embYear.value); } catch (error) { setStatus(ids.embStatusBox, errorText(error, TXT.errEmbSearch), true); }
+    });
+    ids.embYear.addEventListener('change', async () => {
+      try { await loadFilterOptions(ids.embDept.value, ids.embYear.value); } catch (error) { setStatus(ids.embStatusBox, errorText(error, TXT.errEmbSearch), true); }
+    });
+
+    (async () => {
+      try {
+        await loadFilterOptions();
+      } catch (error) {
+        setStatus(ids.baseStatus, errorText(error, TXT.errBaseSearch), true);
+      }
+    })();
+  </script>
+</body>
+</html>
