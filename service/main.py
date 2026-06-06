@@ -7503,7 +7503,11 @@ async def export_activity_normalize_config():
 
 
 @app.get(LAPTOP_TOOL_ADMIN_PAGE)
-async def laptop_tool_admin_page():
+async def laptop_tool_admin_page(request: Request):
+    settings = _read_laptop_tool_admin_settings()
+    resolved_server_base = _resolve_laptop_tool_server_base(settings, request)
+    default_activity_code = str(settings.get("default_activity_code") or "").strip().upper()
+    default_photographer = str(settings.get("default_photographer") or "").strip()
     package_items = []
     doc_items = []
     model_items = []
@@ -7563,6 +7567,39 @@ async def laptop_tool_admin_page():
     if not build_note and not build_version:
         build_note = "未提供版本檔，已改用檔案時間。"
 
+    preview_activities: list[dict] = []
+    preview_photographers: list[dict] = []
+    preview_error = ""
+    try:
+        preview_payload = await export_activity_normalize_config()
+        if isinstance(preview_payload, dict):
+            preview_activities = list(preview_payload.get("activities") or [])
+            preview_photographers = list(preview_payload.get("photographers") or [])
+        elif isinstance(preview_payload, JSONResponse):
+            preview_error = "活動/攝影師清單暫時無法載入。"
+    except Exception as exc:
+        preview_error = str(exc)
+
+    activity_preview_html = "".join(
+        f"<li><code>{html_lib.escape(str(item.get('activity_code') or '').strip())}</code> "
+        f"{html_lib.escape(str(item.get('activity_date') or '').strip())} "
+        f"{html_lib.escape(str(item.get('activity_time_range') or item.get('activity_time') or '').strip())} "
+        f"{html_lib.escape(str(item.get('activity_content') or '').strip())}</li>"
+        for item in preview_activities[:8]
+        if isinstance(item, dict)
+    )
+    if not activity_preview_html:
+        activity_preview_html = "<li>目前沒有可顯示的活動資料。</li>"
+
+    photographer_preview_html = "".join(
+        f"<li><code>{html_lib.escape(str(item.get('name') or item.get('photographer_name') or '').strip())}</code>"
+        f"{' <span class=\"hint\">' + html_lib.escape(str(item.get('note') or '').strip()) + '</span>' if str(item.get('note') or '').strip() else ''}</li>"
+        for item in preview_photographers[:8]
+        if isinstance(item, dict)
+    )
+    if not photographer_preview_html:
+        photographer_preview_html = "<li>目前沒有可顯示的攝影師資料。</li>"
+
     for title, items in (("工具程式", package_items), ("操作文件", doc_items), ("模型檔", model_items)):
         if title == "工具程式":
             meta = (
@@ -7596,6 +7633,55 @@ async def laptop_tool_admin_page():
         if not links:
             links = "<li>尚無檔案</li>"
         rows_html += f"<h3>{title}</h3><ul>{links}</ul>"
+    settings_panel_html = f"""
+    <section class="panel-block">
+      <h2>設定維護</h2>
+      <div class="form-grid">
+        <label>
+          <span>對外 Base URL / IP</span>
+          <input id="serverApiBase" type="text" value="{html_lib.escape(resolved_server_base)}" placeholder="例如：http://10.79.140.107:8000" />
+        </label>
+        <label>
+          <span>預設活動編號</span>
+          <input id="defaultActivityCode" type="text" value="{html_lib.escape(default_activity_code)}" placeholder="例如：A51" />
+        </label>
+        <label>
+          <span>預設攝影師</span>
+          <input id="defaultPhotographer" type="text" value="{html_lib.escape(default_photographer)}" placeholder="例如：王小明" />
+        </label>
+        <label>
+          <span>設定檔位置</span>
+          <input type="text" value="service/laptop_tool_admin_settings.json" readonly />
+        </label>
+      </div>
+      <div class="actions">
+        <button id="saveSettingsBtn" type="button">儲存設定</button>
+        <button id="reloadSettingsBtn" type="button" class="secondary">重新載入</button>
+        <a class="btn secondary" href="/laptop-tool/config">下載目前設定檔</a>
+      </div>
+      <div id="settingsStatus" class="status">目前設定已載入。</div>
+    </section>
+    """
+    preview_panel_html = f"""
+    <section class="panel-block">
+      <h2>設定預覽</h2>
+      <div class="summary-grid">
+        <div class="summary-item"><strong id="activityCount">{len(preview_activities)}</strong><span>活動編號</span></div>
+        <div class="summary-item"><strong id="photographerCount">{len(preview_photographers)}</strong><span>攝影師</span></div>
+      </div>
+      <div class="preview-columns">
+        <div>
+          <h3>活動清單預覽</h3>
+          <ul id="activityPreview">{activity_preview_html}</ul>
+        </div>
+        <div>
+          <h3>攝影師預覽</h3>
+          <ul id="photographerPreview">{photographer_preview_html}</ul>
+        </div>
+      </div>
+      <div class="hint">{html_lib.escape(preview_error) if preview_error else "活動與攝影師清單由資料庫即時匯出，儲存設定不會覆蓋這些清單。"}</div>
+    </section>
+    """
     html = f"""
     <!DOCTYPE html>
     <html lang="zh-Hant">
@@ -7604,18 +7690,43 @@ async def laptop_tool_admin_page():
       <meta name="viewport" content="width=device-width, initial-scale=1" />
       <title>AI人臉辨識系統工具程式</title>
       <style>
-        body {{ margin:0; font-family:"Segoe UI","Noto Sans TC",sans-serif; background:#f4efe7; color:#1f2937; }}
-        .wrap {{ max-width:1080px; margin:0 auto; padding:28px 18px; }}
-        .panel {{ background:#fffdfa; border:1px solid #d8cfbf; border-radius:18px; padding:20px; }}
-        a.btn {{ display:inline-flex; margin-right:8px; padding:10px 14px; border-radius:12px; text-decoration:none; color:#fff; background:linear-gradient(135deg,#92400e,#0f766e); }}
-        .hint {{ color:#64748b; }}
+        :root {{
+          --bg: #f4efe7; --panel: #fffdfa; --ink: #1f2937; --muted: #64748b;
+          --line: #d8cfbf; --accent: #92400e; --accent2: #0f766e;
+        }}
+        * {{ box-sizing: border-box; }}
+        body {{ margin:0; font-family:"Segoe UI","Noto Sans TC",sans-serif; background:linear-gradient(180deg,#e6ddcf,var(--bg)); color:var(--ink); }}
+        .wrap {{ max-width:1180px; margin:0 auto; padding:28px 18px 56px; }}
+        .panel {{ background:var(--panel); border:1px solid var(--line); border-radius:18px; padding:20px; box-shadow:0 12px 32px rgba(41,33,18,.08); }}
+        .panel-block {{ margin-top:18px; padding-top:18px; border-top:1px solid var(--line); }}
+        .form-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px 16px; }}
+        .form-grid label {{ display:flex; flex-direction:column; gap:6px; }}
+        .form-grid span {{ font-weight:700; }}
+        input {{ width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:#fff; }}
+        .actions {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }}
+        .btn, button {{ display:inline-flex; align-items:center; justify-content:center; padding:10px 14px; border-radius:12px; border:0; text-decoration:none; color:#fff; background:linear-gradient(135deg,var(--accent),var(--accent2)); cursor:pointer; font-weight:700; }}
+        .btn.secondary, button.secondary {{ background:#6b7280; }}
+        .status {{ margin-top:12px; padding:10px 12px; border-radius:10px; background:#eef8f6; color:#0f766e; white-space:pre-wrap; }}
+        .hint {{ color:var(--muted); }}
+        .summary-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:12px 0 16px; }}
+        .summary-item {{ background:#fff; border:1px solid var(--line); border-radius:14px; padding:12px 14px; }}
+        .summary-item strong {{ display:block; font-size:30px; line-height:1.1; }}
+        .summary-item span {{ color:var(--muted); }}
+        .preview-columns {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }}
+        .preview-columns ul {{ margin:0; padding-left:20px; }}
+        .preview-columns li {{ margin-bottom:6px; word-break:break-word; }}
+        @media (max-width: 980px) {{
+          .form-grid, .summary-grid, .preview-columns {{ grid-template-columns:1fr; }}
+        }}
       </style>
     </head>
     <body>
       <div class="wrap">
         <div class="panel">
           <h1>AI人臉辨識系統工具程式</h1>
-          <p class="hint">此頁為筆電使用者下載入口（工具程式、模型、設定檔、文件），不影響現有 Server 網頁作業流程。</p>
+          <p class="hint">此頁同時提供管理設定維護與下載入口，不影響現有 Server 網頁作業流程。</p>
+          {settings_panel_html}
+          {preview_panel_html}
           <div>
             <a class="btn" href="/laptop-tool/config">下載設定檔（JSON）</a>
             <a class="btn" href="/laptop-tool/model-manifest">模型清單（JSON）</a>
@@ -7625,10 +7736,122 @@ async def laptop_tool_admin_page():
           {rows_html}
         </div>
       </div>
+      <script>
+        const ids = {{
+          serverApiBase: document.getElementById('serverApiBase'),
+          defaultActivityCode: document.getElementById('defaultActivityCode'),
+          defaultPhotographer: document.getElementById('defaultPhotographer'),
+          saveSettingsBtn: document.getElementById('saveSettingsBtn'),
+          reloadSettingsBtn: document.getElementById('reloadSettingsBtn'),
+          settingsStatus: document.getElementById('settingsStatus'),
+          activityCount: document.getElementById('activityCount'),
+          photographerCount: document.getElementById('photographerCount'),
+          activityPreview: document.getElementById('activityPreview'),
+          photographerPreview: document.getElementById('photographerPreview'),
+        }};
+        function setStatus(text, isError=false) {{
+          ids.settingsStatus.textContent = text;
+          ids.settingsStatus.style.background = isError ? '#fee2e2' : '#eef8f6';
+          ids.settingsStatus.style.color = isError ? '#b91c1c' : '#0f766e';
+        }}
+        function escapeHtml(value) {{
+          return String(value || '').replace(/[&<>"']/g, s => ({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}}[s]));
+        }}
+        function renderPreview(payload) {{
+          const activities = Array.isArray(payload.activities) ? payload.activities : [];
+          const photographers = Array.isArray(payload.photographers) ? payload.photographers : [];
+          ids.activityCount.textContent = String(activities.length);
+          ids.photographerCount.textContent = String(photographers.length);
+          ids.activityPreview.innerHTML = activities.slice(0, 8).map(item => {{
+            const code = escapeHtml(item && item.activity_code ? item.activity_code : '');
+            const date = escapeHtml(item && item.activity_date ? item.activity_date : '');
+            const timeRange = escapeHtml(item && (item.activity_time_range || item.activity_time) ? (item.activity_time_range || item.activity_time) : '');
+            const content = escapeHtml(item && item.activity_content ? item.activity_content : '');
+            return `<li><code>${{code}}</code> ${{date}} ${{timeRange}} ${{content}}</li>`;
+          }}).join('') || '<li>目前沒有可顯示的活動資料。</li>';
+          ids.photographerPreview.innerHTML = photographers.slice(0, 8).map(item => {{
+            const name = escapeHtml(item && (item.name || item.photographer_name) ? (item.name || item.photographer_name) : '');
+            const note = escapeHtml(item && item.note ? item.note : '');
+            return `<li><code>${{name}}</code>${{note ? ` <span class="hint">${{note}}</span>` : ''}}</li>`;
+          }}).join('') || '<li>目前沒有可顯示的攝影師資料。</li>';
+        }}
+        async function loadSettings() {{
+          const response = await fetch('/laptop-tool-admin/settings', {{ cache: 'no-store' }});
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.detail || '載入管理設定失敗');
+          ids.serverApiBase.value = String(payload.server_api_base || payload.public_base_url || '').trim();
+          ids.defaultActivityCode.value = String(payload.default_activity_code || '').trim();
+          ids.defaultPhotographer.value = String(payload.default_photographer || '').trim();
+          setStatus(`已載入設定（更新時間：${{payload.updated_at || '尚未保存'}}）。`);
+        }}
+        async function saveSettings() {{
+          const payload = {{
+            server_api_base: String(ids.serverApiBase.value || '').trim(),
+            default_activity_code: String(ids.defaultActivityCode.value || '').trim().toUpperCase(),
+            default_photographer: String(ids.defaultPhotographer.value || '').trim(),
+          }};
+          const response = await fetch('/laptop-tool-admin/settings', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json; charset=utf-8' }},
+            body: JSON.stringify(payload),
+          }});
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.detail || '儲存設定失敗');
+          ids.serverApiBase.value = String(result.server_api_base || result.public_base_url || '').trim();
+          ids.defaultActivityCode.value = String(result.default_activity_code || '').trim();
+          ids.defaultPhotographer.value = String(result.default_photographer || '').trim();
+          setStatus(`設定已儲存：${{result.updated_at || '已完成'}}`);
+        }}
+        async function loadPreview() {{
+          try {{
+            const response = await fetch('/activity-normalize-config/export', {{ cache: 'no-store' }});
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.detail || '載入活動/攝影師清單失敗');
+            renderPreview(payload);
+          }} catch (error) {{
+            ids.activityCount.textContent = '0';
+            ids.photographerCount.textContent = '0';
+            ids.activityPreview.innerHTML = '<li>載入活動清單失敗。</li>';
+            ids.photographerPreview.innerHTML = '<li>載入攝影師清單失敗。</li>';
+            setStatus(error.message || String(error), true);
+          }}
+        }}
+        ids.saveSettingsBtn.addEventListener('click', async () => {{
+          try {{ await saveSettings(); }} catch (error) {{ setStatus(error.message || String(error), true); }}
+        }});
+        ids.reloadSettingsBtn.addEventListener('click', async () => {{
+          try {{ await loadSettings(); await loadPreview(); }} catch (error) {{ setStatus(error.message || String(error), true); }}
+        }});
+        (async () => {{
+          try {{ await loadSettings(); await loadPreview(); }}
+          catch (error) {{ setStatus(error.message || String(error), true); }}
+        }})();
+      </script>
     </body>
     </html>
     """
     return HTMLResponse(html, headers=html_no_cache_headers())
+
+
+@app.get("/laptop-tool-admin/settings")
+async def laptop_tool_admin_settings():
+    return _read_laptop_tool_admin_settings()
+
+
+@app.post("/laptop-tool-admin/settings")
+async def laptop_tool_admin_settings_save(payload: LaptopToolAdminSettingsPayload, request: Request):
+    try:
+        resolved_base = str(payload.server_api_base or payload.public_base_url or "").strip().rstrip("/")
+        if not resolved_base:
+            resolved_base = _resolve_laptop_tool_request_base(request)
+        saved = _save_laptop_tool_admin_settings(
+            resolved_base,
+            default_activity_code=payload.default_activity_code,
+            default_photographer=payload.default_photographer,
+        )
+        return saved
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/laptop-tool/admin/upload-asset")
@@ -7950,7 +8173,15 @@ if MULTIPART_AVAILABLE:
                 (job_id, job_id),
             )
             db.conn.commit()
-            return {"job_id": job_id, "seq_no": seq_no, "photo_uuid": payload.photo_uuid, "status": "UPLOADED"}
+            chunk_elapsed_ms = int((time.perf_counter() - chunk_started) * 1000)
+            logger.info("laptop-tool chunk job_id=%s seq_no=%s elapsed_ms=%s", job_id, seq_no, chunk_elapsed_ms)
+            return {
+                "job_id": job_id,
+                "seq_no": seq_no,
+                "photo_uuid": payload.photo_uuid,
+                "status": "UPLOADED",
+                "elapsed_ms": chunk_elapsed_ms,
+            }
         except Exception as e:
             if db and db.conn:
                 with contextlib.suppress(Exception):
@@ -8207,7 +8438,8 @@ if MULTIPART_AVAILABLE:
                 return JSONResponse(status_code=404, content={"detail": "找不到 job_id"})
             cursor.execute(
                 """
-                SELECT * FROM laptop_upload_job_item
+                SELECT id, seq_no, photo_uuid, file_name, payload_json, origin_staging_path, thumb_staging_path
+                FROM laptop_upload_job_item
                 WHERE job_id = %s AND status = 'UPLOADED'
                 ORDER BY seq_no ASC
                 """,
@@ -8220,7 +8452,9 @@ if MULTIPART_AVAILABLE:
             thumbs_root = Path("/mnt/activity/dev/thumbs")
             origin_root.mkdir(parents=True, exist_ok=True)
             thumbs_root.mkdir(parents=True, exist_ok=True)
-            for row in rows:
+            commit_started = time.perf_counter()
+
+            def copy_commit_artifacts(row: dict) -> dict:
                 item_id = row.get("id")
                 try:
                     item_payload = json.loads(row.get("payload_json") or "{}")
@@ -8241,10 +8475,48 @@ if MULTIPART_AVAILABLE:
                             thumb_target = thumbs_root / f"{uuid4().hex[:6]}_{file_name}"
                         shutil.copy2(thumb_staging, thumb_target)
                     else:
-                        thumb_target = thumb_target
                         shutil.copy2(origin_staging, thumb_target)
                     item_payload["human_laptop_number"] = str(job.get("device_id") or "")
-                    _upsert_laptop_item_to_main_tables(cursor, item_payload, str(origin_target), str(thumb_target))
+                    return {
+                        "ok": True,
+                        "item_id": item_id,
+                        "item_payload": item_payload,
+                        "origin_target": str(origin_target),
+                        "thumb_target": str(thumb_target),
+                    }
+                except Exception as exc:
+                    return {
+                        "ok": False,
+                        "item_id": item_id,
+                        "error": str(exc),
+                    }
+
+            copy_started = time.perf_counter()
+            with ThreadPoolExecutor(max_workers=max(1, min(4, len(rows) or 1))) as executor:
+                copied_rows = [future.result() for future in [executor.submit(copy_commit_artifacts, row) for row in rows]]
+            copy_elapsed_ms = int((time.perf_counter() - copy_started) * 1000)
+            db_started = time.perf_counter()
+            logger.info("laptop-tool commit copy job_id=%s rows=%s elapsed_ms=%s", payload.job_id, len(rows), copy_elapsed_ms)
+            for entry in copied_rows:
+                item_id = entry.get("item_id")
+                if not entry.get("ok"):
+                    failed += 1
+                    cursor.execute(
+                        """
+                        UPDATE laptop_upload_job_item
+                        SET status = 'FAILED', reason_code = 'COMMIT_ERROR', error_reason = %s, updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (str(entry.get("error") or "未知錯誤"), item_id),
+                    )
+                    continue
+                try:
+                    _upsert_laptop_item_to_main_tables(
+                        cursor,
+                        entry["item_payload"],
+                        entry["origin_target"],
+                        entry["thumb_target"],
+                    )
                     cursor.execute(
                         """
                         UPDATE laptop_upload_job_item
@@ -8264,6 +8536,8 @@ if MULTIPART_AVAILABLE:
                         """,
                         (str(item_error), item_id),
                     )
+            db_elapsed_ms = int((time.perf_counter() - db_started) * 1000)
+            logger.info("laptop-tool commit db job_id=%s committed=%s failed=%s elapsed_ms=%s", payload.job_id, committed, failed, db_elapsed_ms)
             cursor.execute(
                 """
                 UPDATE laptop_upload_job
@@ -8277,11 +8551,31 @@ if MULTIPART_AVAILABLE:
                 (committed, failed, failed, payload.job_id),
             )
             db.conn.commit()
+            commit_elapsed_ms = int((time.perf_counter() - commit_started) * 1000)
+            logger.info(
+                "laptop-tool commit finished job_id=%s committed=%s failed=%s elapsed_ms=%s",
+                payload.job_id,
+                committed,
+                failed,
+                commit_elapsed_ms,
+            )
+            staging_cleared = False
+            staging_cleanup_message = ""
+            if failed == 0:
+                staging_cleared, staging_cleanup_message = _cleanup_laptop_tool_staging_dir(
+                    payload.job_id,
+                    job.get("staging_dir") or (LAPTOP_TOOL_STAGING_ROOT / payload.job_id),
+                )
             return {
                 "job_id": payload.job_id,
                 "committed_count": committed,
                 "failed_count": failed,
                 "status": "FAILED" if failed > 0 else "DONE",
+                "copy_elapsed_ms": copy_elapsed_ms,
+                "db_elapsed_ms": db_elapsed_ms,
+                "commit_elapsed_ms": commit_elapsed_ms,
+                "staging_cleared": staging_cleared,
+                "staging_cleanup_message": staging_cleanup_message,
             }
         except Exception as e:
             if db and db.conn:
