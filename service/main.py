@@ -5912,7 +5912,27 @@ def _to_datetime_or_none(value: str):
     return None
 
 
-def _upsert_laptop_item_to_main_tables(cursor, item_payload: dict, origin_target_path: str, thumb_target_path: str):
+_TABLE_COLUMNS_CACHE: dict[str, set[str]] = {}
+
+
+def _get_table_columns(cursor, table_name: str, *, refresh: bool = False) -> set[str]:
+    cached = _TABLE_COLUMNS_CACHE.get(table_name)
+    if cached is not None and not refresh:
+        return set(cached)
+    cursor.execute(f"SHOW COLUMNS FROM `{table_name}`")
+    cols = {row["Field"] for row in cursor.fetchall()}
+    _TABLE_COLUMNS_CACHE[table_name] = set(cols)
+    return set(cols)
+
+
+def _upsert_laptop_item_to_main_tables(
+    cursor,
+    item_payload: dict,
+    origin_target_path: str,
+    thumb_target_path: str,
+    *,
+    reco_result_cols: set[str] | None = None,
+):
     photo_uuid = str(item_payload.get("photo_uuid") or "").strip()
     if not photo_uuid:
         raise ValueError("photo_uuid 不可空白")
@@ -5976,37 +5996,70 @@ def _upsert_laptop_item_to_main_tables(cursor, item_payload: dict, origin_target
             item_payload.get("img_score"),
         ),
     )
-    cursor.execute("SELECT id FROM img_upload WHERE photo_uuid = %s LIMIT 1", (photo_uuid,))
-    upload_row = cursor.fetchone()
-    upload_id = upload_row["id"] if isinstance(upload_row, dict) else upload_row[0]
-    cursor.execute(
-        """
+
+    reco_result_cols = set(reco_result_cols or _get_table_columns(cursor, "reco_result"))
+    reco_insert_columns = [
+        "origin_full_path",
+        "thumbs_full_path",
+        "photo_taken_time",
+        "reco_count",
+        "reco_unknow",
+        "reco_res",
+        "reco_name",
+    ]
+    reco_values = [
+        origin_target_path,
+        thumb_target_path,
+        photo_taken_time,
+        int(item_payload.get("reco_count") or 0),
+        int(item_payload.get("reco_unknow") or 0),
+        json.dumps(reco_res, ensure_ascii=False),
+        json.dumps(reco_name, ensure_ascii=False),
+    ]
+    reco_update_sets = [
+        "photo_taken_time = VALUES(photo_taken_time)",
+        "reco_count = VALUES(reco_count)",
+        "reco_unknow = VALUES(reco_unknow)",
+        "reco_res = VALUES(reco_res)",
+        "reco_name = VALUES(reco_name)",
+    ]
+    if "photo_uuid" in reco_result_cols:
+        reco_insert_columns.append("photo_uuid")
+        reco_values.append(photo_uuid)
+        reco_update_sets.append("photo_uuid = VALUES(photo_uuid)")
+    if "photo_file_time" in reco_result_cols:
+        reco_insert_columns.append("photo_file_time")
+        reco_values.append(photo_file_time)
+        reco_update_sets.append("photo_file_time = VALUES(photo_file_time)")
+    if "taken_time_source" in reco_result_cols:
+        reco_insert_columns.append("taken_time_source")
+        reco_values.append(taken_time_source)
+        reco_update_sets.append("taken_time_source = VALUES(taken_time_source)")
+    if "create_time" in reco_result_cols:
+        reco_insert_columns.append("create_time")
+    if "update_time" in reco_result_cols:
+        reco_insert_columns.append("update_time")
+
+    reco_insert_placeholders = ["%s"] * len(reco_values)
+    if "create_time" in reco_result_cols:
+        reco_insert_placeholders.append("NOW()")
+    if "update_time" in reco_result_cols:
+        reco_insert_placeholders.append("NOW()")
+    if "update_time" in reco_result_cols:
+        reco_update_sets.append("update_time = NOW()")
+
+    reco_insert_sql = f"""
         INSERT INTO reco_result (
-            upload_id, schedule_id, file_name, reco_name, reco_res,
-            reco_count, reco_unknow, create_time, update_time, photo_uuid,
-            photo_file_time, taken_time_source
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), %s, %s, %s)
+            {", ".join(reco_insert_columns)}
+        ) VALUES (
+            {", ".join(reco_insert_placeholders)}
+        )
         ON DUPLICATE KEY UPDATE
-            reco_name = VALUES(reco_name),
-            reco_res = VALUES(reco_res),
-            reco_count = VALUES(reco_count),
-            reco_unknow = VALUES(reco_unknow),
-            photo_file_time = VALUES(photo_file_time),
-            taken_time_source = VALUES(taken_time_source),
-            update_time = NOW()
-        """,
-        (
-            upload_id,
-            item_payload.get("schedule_id"),
-            item_payload.get("file_name", ""),
-            json.dumps(reco_name, ensure_ascii=False),
-            json.dumps(reco_res, ensure_ascii=False),
-            int(item_payload.get("reco_count") or 0),
-            int(item_payload.get("reco_unknow") or 0),
-            photo_uuid,
-            photo_file_time,
-            taken_time_source,
-        ),
+            {", ".join(reco_update_sets)}
+    """
+    cursor.execute(
+        reco_insert_sql,
+        tuple(reco_values),
     )
 @app.post("/activity-schedules/update")
 async def activity_schedule_update(payload: ActivityScheduleUpdatePayload):
@@ -8448,17 +8501,23 @@ if MULTIPART_AVAILABLE:
             rows = cursor.fetchall() or []
             committed = 0
             failed = 0
+            failed_items: list[dict] = []
             origin_root = Path("/mnt/activity/dev/origin")
             thumbs_root = Path("/mnt/activity/dev/thumbs")
             origin_root.mkdir(parents=True, exist_ok=True)
             thumbs_root.mkdir(parents=True, exist_ok=True)
             commit_started = time.perf_counter()
+            reco_result_cols = _get_table_columns(cursor, "reco_result", refresh=True)
 
             def copy_commit_artifacts(row: dict) -> dict:
                 item_id = row.get("id")
+                item_payload = {}
+                file_name = _safe_leaf_name(row.get("file_name") or "")
+                photo_uuid = str(row.get("photo_uuid") or "").strip()
                 try:
                     item_payload = json.loads(row.get("payload_json") or "{}")
-                    file_name = _safe_leaf_name(item_payload.get("file_name") or row.get("file_name") or "")
+                    file_name = _safe_leaf_name(item_payload.get("file_name") or file_name)
+                    photo_uuid = str(item_payload.get("photo_uuid") or photo_uuid).strip()
                     if not file_name:
                         raise ValueError("file_name 缺失")
                     origin_staging = str(row.get("origin_staging_path") or "").strip()
@@ -8483,12 +8542,16 @@ if MULTIPART_AVAILABLE:
                         "item_payload": item_payload,
                         "origin_target": str(origin_target),
                         "thumb_target": str(thumb_target),
+                        "file_name": file_name,
+                        "photo_uuid": photo_uuid,
                     }
                 except Exception as exc:
                     return {
                         "ok": False,
                         "item_id": item_id,
                         "error": str(exc),
+                        "file_name": file_name,
+                        "photo_uuid": photo_uuid,
                     }
 
             copy_started = time.perf_counter()
@@ -8499,23 +8562,37 @@ if MULTIPART_AVAILABLE:
             logger.info("laptop-tool commit copy job_id=%s rows=%s elapsed_ms=%s", payload.job_id, len(rows), copy_elapsed_ms)
             for entry in copied_rows:
                 item_id = entry.get("item_id")
+                item_payload = entry.get("item_payload") if isinstance(entry.get("item_payload"), dict) else {}
+                item_photo_uuid = str((item_payload or {}).get("photo_uuid") or entry.get("photo_uuid") or "").strip()
+                item_file_name = _safe_leaf_name((item_payload or {}).get("file_name") or entry.get("file_name") or "")
                 if not entry.get("ok"):
                     failed += 1
+                    error_reason = str(entry.get("error") or "未知錯誤")
                     cursor.execute(
                         """
                         UPDATE laptop_upload_job_item
                         SET status = 'FAILED', reason_code = 'COMMIT_ERROR', error_reason = %s, updated_at = NOW()
                         WHERE id = %s
                         """,
-                        (str(entry.get("error") or "未知錯誤"), item_id),
+                        (error_reason, item_id),
+                    )
+                    failed_items.append(
+                        {
+                            "photo_uuid": item_photo_uuid,
+                            "file_name": item_file_name,
+                            "error_code": "COMMIT_COPY_ERROR",
+                            "error_reason": error_reason,
+                            "sql_detail": error_reason,
+                        }
                     )
                     continue
                 try:
                     _upsert_laptop_item_to_main_tables(
                         cursor,
-                        entry["item_payload"],
+                        item_payload,
                         entry["origin_target"],
                         entry["thumb_target"],
+                        reco_result_cols=reco_result_cols,
                     )
                     cursor.execute(
                         """
@@ -8528,13 +8605,23 @@ if MULTIPART_AVAILABLE:
                     committed += 1
                 except Exception as item_error:
                     failed += 1
+                    error_reason = str(item_error)
                     cursor.execute(
                         """
                         UPDATE laptop_upload_job_item
                         SET status = 'FAILED', reason_code = 'COMMIT_ERROR', error_reason = %s, updated_at = NOW()
                         WHERE id = %s
                         """,
-                        (str(item_error), item_id),
+                        (error_reason, item_id),
+                    )
+                    failed_items.append(
+                        {
+                            "photo_uuid": item_photo_uuid,
+                            "file_name": item_file_name,
+                            "error_code": "COMMIT_SQL_ERROR",
+                            "error_reason": error_reason,
+                            "sql_detail": error_reason,
+                        }
                     )
             db_elapsed_ms = int((time.perf_counter() - db_started) * 1000)
             logger.info("laptop-tool commit db job_id=%s committed=%s failed=%s elapsed_ms=%s", payload.job_id, committed, failed, db_elapsed_ms)
@@ -8544,11 +8631,18 @@ if MULTIPART_AVAILABLE:
                 SET committed_count = committed_count + %s,
                     failed_count = failed_count + %s,
                     status = CASE WHEN failed_count + %s > 0 THEN 'FAILED' ELSE 'DONE' END,
+                    error_summary = %s,
                     finished_at = NOW(),
                     updated_at = NOW()
                 WHERE job_id = %s
                 """,
-                (committed, failed, failed, payload.job_id),
+                (
+                    committed,
+                    failed,
+                    failed,
+                    json.dumps(failed_items[:50], ensure_ascii=False) if failed_items else None,
+                    payload.job_id,
+                ),
             )
             db.conn.commit()
             commit_elapsed_ms = int((time.perf_counter() - commit_started) * 1000)
@@ -8576,6 +8670,7 @@ if MULTIPART_AVAILABLE:
                 "commit_elapsed_ms": commit_elapsed_ms,
                 "staging_cleared": staging_cleared,
                 "staging_cleanup_message": staging_cleanup_message,
+                "failed_items": failed_items,
             }
         except Exception as e:
             if db and db.conn:
