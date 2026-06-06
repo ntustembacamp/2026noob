@@ -6,6 +6,7 @@
 
 import csv
 import contextlib
+import html as html_lib
 import io
 import json
 import logging
@@ -19,6 +20,7 @@ import time
 import unicodedata
 import zipfile
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import quote
 from uuid import uuid4
@@ -113,6 +115,7 @@ WINDOWS_ACTIVITY_IMPORT_TOOL_PAGE = "/windows-activity-import-tool"
 WINDOWS_ACTIVITY_IMPORT_TOOL_DOWNLOAD = "/windows-activity-import-tool/download"
 LAPTOP_TOOL_ADMIN_PAGE = "/laptop-tool-admin"
 LAPTOP_TOOL_DOWNLOAD_PAGE = "/laptop-tool/download"
+LAPTOP_TOOL_ADMIN_SETTINGS_PATH = BASE_DIR / "service" / "laptop_tool_admin_settings.json"
 LAPTOP_TOOL_PACKAGE_ROOT = Path("/mnt/activity/laptop_tool/packages")
 LAPTOP_TOOL_DOC_ROOT = Path("/mnt/activity/laptop_tool/docs")
 LAPTOP_TOOL_MODEL_ROOT = BASE_DIR / "service" / "models"
@@ -357,6 +360,87 @@ def html_no_cache_headers() -> dict[str, str]:
         "Pragma": "no-cache",
         "Expires": "0",
     }
+
+
+def _read_laptop_tool_admin_settings() -> dict:
+    settings = {
+        "server_api_base": "",
+        "public_base_url": "",
+        "default_activity_code": "",
+        "default_photographer": "",
+        "updated_at": "",
+    }
+    if not LAPTOP_TOOL_ADMIN_SETTINGS_PATH.exists():
+        return settings
+    try:
+        raw = json.loads(LAPTOP_TOOL_ADMIN_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return settings
+    if not isinstance(raw, dict):
+        return settings
+    server_api_base = str(raw.get("server_api_base") or raw.get("public_base_url") or "").strip().rstrip("/")
+    settings.update(raw)
+    settings["server_api_base"] = server_api_base
+    settings["public_base_url"] = server_api_base
+    settings["default_activity_code"] = str(raw.get("default_activity_code") or "").strip().upper()
+    settings["default_photographer"] = str(raw.get("default_photographer") or "").strip()
+    settings["updated_at"] = str(raw.get("updated_at") or "").strip()
+    return settings
+
+
+def _resolve_laptop_tool_request_base(request: Request) -> str:
+    request_base = str(request.base_url).rstrip("/")
+    host_header = str(request.headers.get("host") or "").strip()
+    header_base = f"{request.url.scheme}://{host_header}".rstrip("/") if host_header else ""
+    if header_base and not any(token in header_base.lower() for token in ("localhost", "127.0.0.1")):
+        return header_base
+    return request_base
+
+
+def _resolve_laptop_tool_server_base(settings: dict, request: Request | None = None) -> str:
+    configured = str((settings or {}).get("server_api_base") or (settings or {}).get("public_base_url") or "").strip().rstrip("/")
+    if configured:
+        return configured
+    if request is not None:
+        return _resolve_laptop_tool_request_base(request)
+    return ""
+
+
+def _save_laptop_tool_admin_settings(server_api_base: str, default_activity_code: str = "", default_photographer: str = "") -> dict:
+    resolved_base = str(server_api_base or "").strip().rstrip("/")
+    if not resolved_base:
+        raise ValueError("請輸入對外 IP / Base URL。")
+    payload = dict(_read_laptop_tool_admin_settings())
+    payload["server_api_base"] = resolved_base
+    payload["public_base_url"] = resolved_base
+    payload["default_activity_code"] = str(default_activity_code or "").strip().upper()
+    payload["default_photographer"] = str(default_photographer or "").strip()
+    payload["updated_at"] = _now_tpe().isoformat(timespec="seconds")
+    LAPTOP_TOOL_ADMIN_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LAPTOP_TOOL_ADMIN_SETTINGS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+    return payload
+
+
+def _cleanup_laptop_tool_staging_dir(job_id: str, staging_dir: str | Path | None) -> tuple[bool, str]:
+    """
+    保守清理：只刪除單一 job 的 staging 子目錄，且必須位於既定 staging root 底下。
+    """
+    if not staging_dir:
+        return False, "staging_dir 空白，略過清理"
+    try:
+        target = Path(staging_dir).resolve()
+        root = LAPTOP_TOOL_STAGING_ROOT.resolve()
+        try:
+            target.relative_to(root)
+        except ValueError:
+            return False, f"staging_dir 不在允許範圍內：{target}"
+        if target.exists():
+            shutil.rmtree(target)
+            return True, f"已清除 staging：{target}"
+        return True, f"staging 已不存在：{target}"
+    except Exception as exc:
+        logger.warning("清除 laptop_tool staging 失敗 job_id=%s staging_dir=%s error=%s", job_id, staging_dir, exc)
+        return False, f"清除 staging 失敗：{exc}"
 
 
 def render_clean_activity_schedule_ui_html() -> str:
@@ -5743,6 +5827,13 @@ class LaptopToolUploadCommitPayload(BaseModel):
     job_id: str = Field(..., min_length=1, max_length=80)
 
 
+class LaptopToolAdminSettingsPayload(BaseModel):
+    server_api_base: str = Field(default="", max_length=512)
+    public_base_url: str = Field(default="", max_length=512)
+    default_activity_code: str = Field(default="", max_length=64)
+    default_photographer: str = Field(default="", max_length=255)
+
+
 def ensure_laptop_tool_tables():
     db = None
     cursor = None
@@ -7588,20 +7679,15 @@ async def laptop_tool_download_package_zip():
 
 @app.get("/laptop-tool/config")
 async def laptop_tool_config(request: Request):
+    settings = _read_laptop_tool_admin_settings()
     payload = await export_activity_normalize_config()
     if isinstance(payload, JSONResponse):
         return payload
-    configured_base = str(os.getenv("LAPTOP_TOOL_PUBLIC_BASE_URL", "")).strip().rstrip("/")
-    request_base = str(request.base_url).rstrip("/")
-    host_header = str(request.headers.get("host") or "").strip()
-    header_base = f"{request.url.scheme}://{host_header}".rstrip("/") if host_header else ""
-    if configured_base:
-        base_url = configured_base
-    elif header_base and not any(x in header_base.lower() for x in ("localhost", "127.0.0.1")):
-        base_url = header_base
-    else:
-        base_url = request_base
+    base_url = _resolve_laptop_tool_server_base(settings, request)
     payload["server_api_base"] = base_url
+    payload["public_base_url"] = base_url
+    payload["default_activity_code"] = str(settings.get("default_activity_code") or "").strip().upper()
+    payload["default_photographer"] = str(settings.get("default_photographer") or "").strip()
     payload["upload_api"] = {
         "start": f"{base_url}/laptop-tool/upload-batch/start",
         "chunk": f"{base_url}/laptop-tool/upload-batch/chunk",
@@ -7798,6 +7884,7 @@ if MULTIPART_AVAILABLE:
         ensure_laptop_tool_tables()
         db = None
         cursor = None
+        chunk_started = time.perf_counter()
         try:
             payload = LaptopToolUploadChunkMeta.model_validate_json(item_json)
             db = mysqlconnector()
@@ -7805,7 +7892,7 @@ if MULTIPART_AVAILABLE:
             if db.conn is None:
                 raise RuntimeError("資料庫連線失敗")
             cursor = db.conn.cursor(dictionary=True)
-            cursor.execute("SELECT * FROM laptop_upload_job WHERE job_id = %s LIMIT 1", (job_id,))
+            cursor.execute("SELECT job_id, staging_dir FROM laptop_upload_job WHERE job_id = %s LIMIT 1", (job_id,))
             job = cursor.fetchone()
             if not job:
                 return JSONResponse(status_code=404, content={"detail": "找不到 job_id"})
