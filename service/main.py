@@ -324,13 +324,13 @@ def render_clean_home_html() -> str:
                 <a class="button secondary" href="/activity-photo-import-ui">活動照片匯入入庫與後續辨識</a>
                 <a class="button secondary" href="/photographer-ui">攝影師資料建立維護</a>
                 <a class="button secondary" href="/activity-award-ui">活動獎項資料建立維護</a>
-                <a class="button secondary" href="/laptop-tool-admin">AI人臉辨識系統工具程式</a>
               </div>
             </section>
             <section class="group">
-              <h2>工具程式上傳監看</h2>
+              <h2>AI人臉辨識系統工具程式</h2>
               <p>查看各台筆電的上傳作業、目前進度與最近狀態，方便快速確認哪一台正在傳檔。</p>
               <div class="links">
+                <a class="button secondary" href="/laptop-tool-admin">AI人臉辨識系統工具程式設定維護</a>
                 <a class="button secondary" href="/laptop-tool-upload-monitor">AI人臉辨識系統工具程式上傳作業檢視</a>
               </div>
             </section>
@@ -8173,7 +8173,7 @@ async def laptop_tool_admin_page(request: Request):
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>AI人臉辨識系統工具程式</title>
+      <title>AI人臉辨識系統工具程式設定維護</title>
       <style>
         :root {{
           --bg: #f4efe7; --panel: #fffdfa; --ink: #1f2937; --muted: #64748b;
@@ -8208,7 +8208,7 @@ async def laptop_tool_admin_page(request: Request):
     <body>
       <div class="wrap">
         <div class="panel">
-          <h1>AI人臉辨識系統工具程式</h1>
+          <h1>AI人臉辨識系統工具程式設定維護</h1>
           <p class="hint">此頁同時提供管理設定維護與下載入口，不影響現有 Server 網頁作業流程。</p>
           {settings_panel_html}
           {preview_panel_html}
