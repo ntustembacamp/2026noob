@@ -717,8 +717,7 @@ def _fetch_laptop_tool_upload_monitor_snapshot(
     active_rows = [_normalize_laptop_upload_job_row(row) for row in (cursor.fetchall() or [])]
 
     recent_filters = list(filters)
-    if active_only:
-        recent_filters.append("status IN ('QUEUED', 'RUNNING')")
+    recent_filters.append("status NOT IN ('QUEUED', 'RUNNING')")
     recent_where = " AND ".join(recent_filters) if recent_filters else "1=1"
     cursor.execute(
         f"""
