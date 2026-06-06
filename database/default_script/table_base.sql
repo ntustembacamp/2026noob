@@ -11,5 +11,6 @@ CREATE TABLE base (
     phash VARCHAR(255) COMMENT '感知雜湊值',
     file_path VARCHAR(255) COMMENT '檔案路徑',
     file_name VARCHAR(255) COMMENT '檔案名稱',
-    UNIQUE INDEX idx_unique (dept, year, team, name)
+    UNIQUE INDEX idx_unique (dept, year, team, name),
+    KEY idx_base_dept_year_team_name (dept, year, team, name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

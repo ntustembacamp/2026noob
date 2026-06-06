@@ -88,6 +88,8 @@ logger = logging.getLogger(__name__)
 if not MULTIPART_AVAILABLE:
     logger.warning("python-multipart not installed; upload-related routes may be unavailable.")
 
+PHOTO_QUERY_INDEXES_READY = False
+
 ALLOWED_PREVIEW_PREFIXES = (
     "/mnt/activity/",
     "/root/noob/database/",
@@ -2966,6 +2968,63 @@ def ensure_photo_mark_schema():
         db.close()
 
 
+def ensure_photo_query_indexes():
+    global PHOTO_QUERY_INDEXES_READY
+    if PHOTO_QUERY_INDEXES_READY:
+        return
+
+    db, cursor = get_db_cursor()
+    try:
+        cursor.execute("SHOW COLUMNS FROM img_upload")
+        upload_cols = {row["Field"] for row in cursor.fetchall()}
+        cursor.execute("SHOW COLUMNS FROM reco_result")
+        reco_cols = {row["Field"] for row in cursor.fetchall()}
+        cursor.execute("SHOW COLUMNS FROM base")
+        base_cols = {row["Field"] for row in cursor.fetchall()}
+
+        if {"photo_uuid", "create_time"}.issubset(upload_cols):
+            upload_index_columns = ["photo_uuid"]
+            if "is_deleted" in upload_cols:
+                upload_index_columns.append("is_deleted")
+            upload_index_columns.append("create_time")
+            upload_index_name = "idx_img_upload_" + "_".join(upload_index_columns)
+            with contextlib.suppress(Exception):
+                cursor.execute(
+                    f"ALTER TABLE img_upload ADD KEY {upload_index_name} ({', '.join(upload_index_columns)})"
+                )
+
+        if {"photo_uuid", "create_time"}.issubset(reco_cols):
+            reco_index_columns = ["photo_uuid"]
+            if "is_deleted" in reco_cols:
+                reco_index_columns.append("is_deleted")
+            reco_index_columns.append("create_time")
+            reco_index_name = "idx_reco_result_" + "_".join(reco_index_columns)
+            with contextlib.suppress(Exception):
+                cursor.execute(
+                    f"ALTER TABLE reco_result ADD KEY {reco_index_name} ({', '.join(reco_index_columns)})"
+                )
+
+        if {"dept", "year", "team", "name"}.issubset(base_cols):
+            with contextlib.suppress(Exception):
+                cursor.execute(
+                    "ALTER TABLE base ADD KEY idx_base_dept_year_team_name (dept, year, team, name)"
+                )
+
+        db.conn.commit()
+        PHOTO_QUERY_INDEXES_READY = True
+        logger.info("photo query indexes ensured")
+    finally:
+        cursor.close()
+        db.close()
+
+
+def _build_photo_join_expr(join_key: str) -> str:
+    normalized_key = str(join_key or "").strip().lower()
+    if normalized_key == "origin_full_path":
+        return "rr.origin_full_path = iu.origin_full_path"
+    return "(rr.photo_uuid IS NOT NULL AND rr.photo_uuid = iu.photo_uuid)"
+
+
 def ensure_device_registry_table():
     db, cursor = get_db_cursor()
     try:
@@ -3290,6 +3349,63 @@ def build_advanced_conditions(
     return conditions, params
 
 
+def build_advanced_base_exists_clause(
+    dept: list[str] | None = None,
+    year: int | None = None,
+    years: list[int] | None = None,
+    team: list[str] | None = None,
+    name: str = "",
+):
+    clauses = []
+    params = []
+
+    normalized_depts = [item for item in (dept or []) if str(item).strip()]
+    if normalized_depts:
+        placeholders = ", ".join(["%s"] * len(normalized_depts))
+        clauses.append(f"COALESCE(b.dept, '') IN ({placeholders})")
+        params.extend(normalized_depts)
+
+    normalized_years = []
+    for item in (years or []):
+        with contextlib.suppress(Exception):
+            normalized_years.append(int(item))
+    normalized_years = sorted(set(normalized_years))
+    if year is not None:
+        clauses.append("b.year = %s")
+        params.append(year)
+    elif normalized_years:
+        placeholders = ", ".join(["%s"] * len(normalized_years))
+        clauses.append(f"b.year IN ({placeholders})")
+        params.extend(normalized_years)
+
+    normalized_teams = [item for item in (team or []) if str(item).strip()]
+    if normalized_teams:
+        placeholders = ", ".join(["%s"] * len(normalized_teams))
+        clauses.append(f"COALESCE(b.team, '') IN ({placeholders})")
+        params.extend(normalized_teams)
+
+    if name:
+        clauses.append("COALESCE(b.name, '') LIKE %s")
+        params.append(f"%{name}%")
+
+    if not clauses:
+        return "", []
+
+    clause = f"""
+    EXISTS (
+        SELECT 1
+        FROM base b
+        WHERE JSON_SEARCH(
+            COALESCE(rr.reco_name, '[]'),
+            'one',
+            CONCAT(b.dept, '_', b.year, '_', COALESCE(b.team, ''), '_', COALESCE(b.name, ''))
+        ) IS NOT NULL
+          AND {' AND '.join(clauses)}
+    )
+    """
+    return clause, params
+
+
 def query_advanced_recognition_records(
     dept: list[str] | None = None,
     year: int | None = None,
@@ -3314,116 +3430,248 @@ def query_advanced_recognition_records(
     ensure_activity_tables()
     ensure_recognition_soft_delete_schema()
     ensure_photo_mark_schema()
+    ensure_photo_query_indexes()
     db, cursor = get_db_cursor()
-    conditions, params = build_advanced_conditions(
-        dept=dept,
-        year=year,
-        years=years,
-        team=team,
-        name=name,
-        start_time=start_time,
-        end_time=end_time,
-        taken_start_time=taken_start_time,
-        taken_end_time=taken_end_time,
-        det_score_min=None,
-        det_score_max=None,
-        reco_count=reco_count,
-        activity_schedule_id=activity_schedule_id,
-        recognition_status=recognition_status,
-        mark_type=mark_type,
-        award_ids=award_ids,
-    )
-    offset = max(page - 1, 0) * limit
-
-    where_clause = ""
-    if conditions:
-        where_clause = "WHERE " + " AND ".join(conditions)
-    base_where = "COALESCE(iu.is_deleted, 0) = 0"
-    if where_clause:
-        where_clause = where_clause + " AND " + base_where
-    else:
-        where_clause = "WHERE " + base_where
-
-    sql = f"""
-    SELECT
-        rr.id,
-        rr.id AS reco_result_id,
-        iu.id AS img_upload_id,
-        COALESCE(rr.photo_uuid, iu.photo_uuid) AS photo_uuid,
-        COALESCE(rr.origin_full_path, iu.origin_full_path) AS origin_full_path,
-        COALESCE(rr.thumbs_full_path, iu.thumbs_full_path) AS thumbs_full_path,
-        COALESCE(rr.photo_taken_time, iu.photo_taken_time) AS photo_taken_time,
-        iu.photo_file_time,
-        iu.img_score AS image_score,
-        COALESCE(rr.reco_count, 0) AS reco_count,
-        COALESCE(rr.reco_unknow, 0) AS reco_unknow,
-        rr.reco_name,
-        rr.reco_res,
-        COALESCE(iu.photo_file_time, rr.create_time, iu.create_time) AS photo_create_time,
-        COALESCE(rr.create_time, iu.create_time) AS record_create_time,
-        COALESCE(rr.update_time, iu.update_time) AS update_time,
-        COALESCE(iu.reco_error, '') AS reco_error,
-        COALESCE(iu.reco_status, 'PENDING') AS reco_status_raw,
-        COALESCE(iu.is_video_pick, 0) AS is_video_pick,
-        CASE
-          WHEN COALESCE(iu.reco_status, 'PENDING') = 'FAILED' THEN 'FAILED'
-          WHEN rr.id IS NULL THEN 'PENDING'
-          WHEN COALESCE(iu.reco_status, 'PENDING') = 'DONE'
-               AND COALESCE(rr.reco_count, 0) > 0
-               AND (
-                 LOWER(COALESCE(rr.reco_name, '')) LIKE '%"unknown"%'
-                 OR LOWER(COALESCE(rr.reco_name, '')) = 'unknown'
-               ) THEN 'MIXED'
-          WHEN LOWER(COALESCE(rr.reco_name, '')) LIKE '%"unknown"%'
-               OR LOWER(COALESCE(rr.reco_name, '')) = 'unknown' THEN
-               CASE
-                 WHEN COALESCE(rr.reco_count, 0) = 0 THEN 'UNKNOWN'
-                 ELSE 'MIXED'
-               END
-          WHEN COALESCE(iu.reco_status, 'PENDING') = 'DONE' THEN 'DONE'
-          ELSE COALESCE(iu.reco_status, 'PENDING')
-        END AS recognition_status,
-        CASE
-          WHEN LOWER(COALESCE(rr.reco_name, '')) LIKE '%"unknown"%'
-               OR LOWER(COALESCE(rr.reco_name, '')) = 'unknown' THEN 1
-          ELSE 0
-        END AS is_unknown,
-        b.dept,
-        b.year,
-        COALESCE(b.team, '') AS team,
-        COALESCE(b.name, '') AS name,
-        CASE
-          WHEN b.id IS NOT NULL THEN CONCAT(b.dept, '_', b.year, '_', COALESCE(b.team, ''), '_', COALESCE(b.name, ''))
-          WHEN LOWER(COALESCE(rr.reco_name, '')) LIKE '%"unknown"%'
-               OR LOWER(COALESCE(rr.reco_name, '')) = 'unknown' THEN 'unknown'
-          ELSE ''
-        END AS matched_person
-    FROM img_upload iu
-    LEFT JOIN reco_result rr
-      ON (
-        (rr.photo_uuid IS NOT NULL AND rr.photo_uuid = iu.photo_uuid)
-        OR rr.origin_full_path = iu.origin_full_path
-      )
-      AND COALESCE(rr.is_deleted, 0) = 0
-    LEFT JOIN base b
-      ON JSON_SEARCH(
-        COALESCE(rr.reco_name, '[]'),
-        'one',
-        CONCAT(b.dept, '_', b.year, '_', COALESCE(b.team, ''), '_', COALESCE(b.name, ''))
-      ) IS NOT NULL
-    {where_clause}
-    ORDER BY COALESCE(rr.create_time, iu.create_time) DESC, iu.id DESC
-    """
+    normalized_mode = str(result_mode or "photo").strip().lower()
+    if normalized_mode not in {"photo", "detail"}:
+        normalized_mode = "photo"
 
     try:
-        cursor.execute(sql, tuple(params))
-        rows = normalize_record_rows(cursor.fetchall())
-
-        normalized_mode = str(result_mode or "photo").strip().lower()
-        if normalized_mode not in {"photo", "detail"}:
-            normalized_mode = "photo"
-
         if normalized_mode == "photo":
+            query_started = time.perf_counter()
+            photo_conditions, photo_params = build_advanced_conditions(
+                dept=None,
+                year=None,
+                years=None,
+                team=None,
+                name="",
+                start_time=start_time,
+                end_time=end_time,
+                taken_start_time=taken_start_time,
+                taken_end_time=taken_end_time,
+                det_score_min=det_score_min,
+                det_score_max=det_score_max,
+                reco_count=reco_count,
+                activity_schedule_id=activity_schedule_id,
+                recognition_status=recognition_status,
+                mark_type=mark_type,
+                award_ids=award_ids,
+            )
+            base_clause, base_params = build_advanced_base_exists_clause(
+                dept=dept,
+                year=year,
+                years=years,
+                team=team,
+                name=name,
+            )
+            if base_clause:
+                photo_conditions.append(base_clause)
+                photo_params.extend(base_params)
+
+            where_clause = ""
+            if photo_conditions:
+                where_clause = "WHERE " + " AND ".join(photo_conditions)
+            base_where = "COALESCE(iu.is_deleted, 0) = 0"
+            if where_clause:
+                where_clause = where_clause + " AND " + base_where
+            else:
+                where_clause = "WHERE " + base_where
+
+            def _build_photo_path_subquery(join_key: str, path_rank: int) -> str:
+                join_expr = _build_photo_join_expr(join_key)
+                return f"""
+                SELECT
+                    iu.id AS img_upload_id,
+                    MAX(COALESCE(rr.create_time, iu.create_time)) AS sort_time,
+                    {path_rank} AS path_rank
+                FROM img_upload iu
+                LEFT JOIN reco_result rr
+                  ON ({join_expr})
+                  AND COALESCE(rr.is_deleted, 0) = 0
+                {where_clause}
+                GROUP BY iu.id
+                """
+
+            photo_uuid_path_sql = _build_photo_path_subquery("photo_uuid", 0)
+            origin_path_sql = _build_photo_path_subquery("origin_full_path", 1)
+
+            count_sql = f"""
+            SELECT COUNT(*) AS total_count
+            FROM (
+                SELECT img_upload_id
+                FROM (
+                    {photo_uuid_path_sql}
+                    UNION ALL
+                    {origin_path_sql}
+                ) photo_matches
+                GROUP BY img_upload_id
+            ) counted
+            """
+            count_started = time.perf_counter()
+            cursor.execute(count_sql, tuple(photo_params + photo_params))
+            count_row = cursor.fetchone() or {}
+            total = int(count_row.get("total_count") or 0)
+            count_elapsed_ms = int((time.perf_counter() - count_started) * 1000)
+
+            if total <= 0:
+                logger.info(
+                    "query-ui-advanced photo count zero elapsed_ms=%s filters=%s",
+                    count_elapsed_ms,
+                    {"year": year, "years": years, "page": page, "limit": limit},
+                )
+                return {
+                    "total": 0,
+                    "page": page,
+                    "page_size": limit,
+                    "total_pages": 1,
+                    "result_mode": normalized_mode,
+                    "items": [],
+                }
+
+            offset = max(page - 1, 0) * limit
+            page_sql = f"""
+            SELECT
+                img_upload_id,
+                MAX(sort_time) AS sort_time,
+                MIN(path_rank) AS path_rank
+            FROM (
+                {photo_uuid_path_sql}
+                UNION ALL
+                {origin_path_sql}
+            ) photo_matches
+            GROUP BY img_upload_id
+            ORDER BY sort_time DESC, path_rank ASC, img_upload_id DESC
+            LIMIT %s OFFSET %s
+            """
+            page_started = time.perf_counter()
+            cursor.execute(page_sql, tuple(photo_params + photo_params + [int(limit), int(offset)]))
+            page_id_rows = cursor.fetchall() or []
+            page_ids = [int(row.get("img_upload_id") or 0) for row in page_id_rows if int(row.get("img_upload_id") or 0) > 0]
+            page_elapsed_ms = int((time.perf_counter() - page_started) * 1000)
+
+            if not page_ids:
+                logger.info(
+                    "query-ui-advanced photo no page ids count_elapsed_ms=%s page_elapsed_ms=%s total=%s",
+                    count_elapsed_ms,
+                    page_elapsed_ms,
+                    total,
+                )
+                return {
+                    "total": total,
+                    "page": page,
+                    "page_size": limit,
+                    "total_pages": max((total + limit - 1) // limit, 1),
+                    "result_mode": normalized_mode,
+                    "items": [],
+                }
+
+            placeholders = ", ".join(["%s"] * len(page_ids))
+
+            def _build_photo_detail_sql(join_key: str, path_rank: int) -> str:
+                join_expr = _build_photo_join_expr(join_key)
+                return f"""
+                SELECT
+                    rr.id,
+                    rr.id AS reco_result_id,
+                    iu.id AS img_upload_id,
+                    COALESCE(rr.photo_uuid, iu.photo_uuid) AS photo_uuid,
+                    COALESCE(rr.origin_full_path, iu.origin_full_path) AS origin_full_path,
+                    COALESCE(rr.thumbs_full_path, iu.thumbs_full_path) AS thumbs_full_path,
+                    COALESCE(rr.photo_taken_time, iu.photo_taken_time) AS photo_taken_time,
+                    iu.photo_file_time,
+                    iu.img_score AS image_score,
+                    COALESCE(rr.reco_count, 0) AS reco_count,
+                    COALESCE(rr.reco_unknow, 0) AS reco_unknow,
+                    rr.reco_name,
+                    rr.reco_res,
+                    COALESCE(iu.photo_file_time, rr.create_time, iu.create_time) AS photo_create_time,
+                    COALESCE(rr.create_time, iu.create_time) AS record_create_time,
+                    COALESCE(rr.update_time, iu.update_time) AS update_time,
+                    COALESCE(iu.reco_error, '') AS reco_error,
+                    COALESCE(iu.reco_status, 'PENDING') AS reco_status_raw,
+                    COALESCE(iu.is_video_pick, 0) AS is_video_pick,
+                    {path_rank} AS path_rank,
+                    CASE
+                      WHEN COALESCE(iu.reco_status, 'PENDING') = 'FAILED' THEN 'FAILED'
+                      WHEN rr.id IS NULL THEN 'PENDING'
+                      WHEN COALESCE(iu.reco_status, 'PENDING') = 'DONE'
+                           AND COALESCE(rr.reco_count, 0) > 0
+                           AND (
+                             LOWER(COALESCE(rr.reco_name, '')) LIKE '%"unknown"%'
+                             OR LOWER(COALESCE(rr.reco_name, '')) = 'unknown'
+                           ) THEN 'MIXED'
+                      WHEN LOWER(COALESCE(rr.reco_name, '')) LIKE '%"unknown"%'
+                           OR LOWER(COALESCE(rr.reco_name, '')) = 'unknown' THEN
+                           CASE
+                             WHEN COALESCE(rr.reco_count, 0) = 0 THEN 'UNKNOWN'
+                             ELSE 'MIXED'
+                           END
+                      WHEN COALESCE(iu.reco_status, 'PENDING') = 'DONE' THEN 'DONE'
+                      ELSE COALESCE(iu.reco_status, 'PENDING')
+                    END AS recognition_status,
+                    CASE
+                      WHEN LOWER(COALESCE(rr.reco_name, '')) LIKE '%"unknown"%'
+                           OR LOWER(COALESCE(rr.reco_name, '')) = 'unknown' THEN 1
+                      ELSE 0
+                    END AS is_unknown,
+                    b.dept,
+                    b.year,
+                    COALESCE(b.team, '') AS team,
+                    COALESCE(b.name, '') AS name,
+                    CASE
+                      WHEN b.id IS NOT NULL THEN CONCAT(b.dept, '_', b.year, '_', COALESCE(b.team, ''), '_', COALESCE(b.name, ''))
+                      WHEN LOWER(COALESCE(rr.reco_name, '')) LIKE '%"unknown"%'
+                           OR LOWER(COALESCE(rr.reco_name, '')) = 'unknown' THEN 'unknown'
+                      ELSE ''
+                    END AS matched_person
+                FROM img_upload iu
+                LEFT JOIN reco_result rr
+                  ON ({join_expr})
+                  AND COALESCE(rr.is_deleted, 0) = 0
+                LEFT JOIN base b
+                  ON JSON_SEARCH(
+                    COALESCE(rr.reco_name, '[]'),
+                    'one',
+                    CONCAT(b.dept, '_', b.year, '_', COALESCE(b.team, ''), '_', COALESCE(b.name, ''))
+                  ) IS NOT NULL
+                {where_clause}
+                  AND iu.id IN ({placeholders})
+                ORDER BY COALESCE(rr.create_time, iu.create_time) DESC, iu.id DESC, rr.id DESC
+                """
+
+            combined_rows = []
+            detail_elapsed_ms = 0
+            for join_key, path_rank in (("photo_uuid", 0), ("origin_full_path", 1)):
+                detail_sql = _build_photo_detail_sql(join_key, path_rank)
+                detail_started = time.perf_counter()
+                cursor.execute(detail_sql, tuple(photo_params + page_ids))
+                path_rows = normalize_record_rows(cursor.fetchall())
+                detail_elapsed_ms += int((time.perf_counter() - detail_started) * 1000)
+                for row in path_rows:
+                    row["_path_rank"] = path_rank
+                combined_rows.extend(path_rows)
+
+            deduped_rows: dict[tuple[str, int], dict] = {}
+            for row in combined_rows:
+                reco_result_id = int(row.get("reco_result_id") or 0)
+                upload_id = int(row.get("img_upload_id") or 0)
+                key = ("reco", reco_result_id) if reco_result_id > 0 else ("upload", upload_id)
+                existing = deduped_rows.get(key)
+                current_path_rank = int(row.get("_path_rank") or 0)
+                if existing is None or current_path_rank < int(existing.get("_path_rank") or 0):
+                    deduped_rows[key] = row
+
+            rows = list(deduped_rows.values())
+            rows.sort(
+                key=lambda r: (
+                    _to_naive_datetime(r.get("record_create_time") or r.get("photo_create_time")) or datetime.min,
+                    -int(r.get("_path_rank") or 0),
+                    int(r.get("img_upload_id") or 0),
+                    int(r.get("reco_result_id") or 0),
+                ),
+                reverse=True,
+            )
+
             grouped: dict[int, dict] = {}
             for row in rows:
                 upload_id = int(row.get("img_upload_id") or 0)
@@ -3462,10 +3710,8 @@ def query_advanced_recognition_records(
                     value = entry.get("det_score")
                     if value is None:
                         continue
-                    try:
+                    with contextlib.suppress(TypeError, ValueError):
                         item["_det_scores"].append(float(value))
-                    except (TypeError, ValueError):
-                        continue
 
                 if not item.get("photo_taken_time") and row.get("photo_taken_time"):
                     item["photo_taken_time"] = row.get("photo_taken_time")
@@ -3496,17 +3742,17 @@ def query_advanced_recognition_records(
 
                 reco_status_raw = str(item.get("reco_status_raw") or "").upper()
                 if reco_status_raw == "FAILED":
-                    recognition_status = "FAILED"
+                    recognition_status_value = "FAILED"
                 elif not item.get("_has_reco_result"):
-                    recognition_status = "PENDING"
+                    recognition_status_value = "PENDING"
                 elif known_count > 0 and unknown_count > 0:
-                    recognition_status = "MIXED"
+                    recognition_status_value = "MIXED"
                 elif known_count > 0:
-                    recognition_status = "DONE"
+                    recognition_status_value = "DONE"
                 elif unknown_count > 0:
-                    recognition_status = "UNKNOWN"
+                    recognition_status_value = "UNKNOWN"
                 else:
-                    recognition_status = "PENDING"
+                    recognition_status_value = "PENDING"
 
                 det_scores = item.get("_det_scores", [])
                 item["known_names_full"] = known_names
@@ -3515,9 +3761,9 @@ def query_advanced_recognition_records(
                 item["known_count"] = known_count
                 item["unknown_count"] = unknown_count
                 item["face_total_count"] = face_total_count
-                item["is_mixed"] = 1 if recognition_status == "MIXED" else 0
-                item["recognition_status"] = recognition_status
-                item["is_unknown"] = 1 if recognition_status == "UNKNOWN" else 0
+                item["is_mixed"] = 1 if recognition_status_value == "MIXED" else 0
+                item["recognition_status"] = recognition_status_value
+                item["is_unknown"] = 1 if recognition_status_value == "UNKNOWN" else 0
                 item["det_score_values"] = det_scores
                 if det_scores:
                     item["det_score_max"] = max(det_scores)
@@ -3533,55 +3779,199 @@ def query_advanced_recognition_records(
                 item.pop("_unknown_count", None)
                 item.pop("_det_scores", None)
                 item.pop("_has_reco_result", None)
+                item.pop("_path_rank", None)
                 aggregated_rows.append(item)
 
-            if det_score_min is not None or det_score_max is not None:
-                filtered_rows = []
-                for row in aggregated_rows:
-                    det_scores = row.get("det_score_values") if isinstance(row.get("det_score_values"), list) else []
-                    if not det_scores:
+            img_upload_ids = [int(row.get("img_upload_id")) for row in aggregated_rows if row.get("img_upload_id")]
+            award_tags_map: dict[int, list[dict]] = {}
+            if img_upload_ids:
+                placeholders = ", ".join(["%s"] * len(img_upload_ids))
+                cursor.execute(
+                    f"""
+                    SELECT
+                        iuat.img_upload_id,
+                        aam.id AS award_id,
+                        COALESCE(aam.serial_no, 0) AS serial_no,
+                        COALESCE(aam.award_category, '') AS award_category,
+                        COALESCE(aam.activity_item, '') AS activity_item,
+                        COALESCE(aam.mapped_award, '') AS mapped_award,
+                        COALESCE(aam.award_name, '') AS award_name
+                    FROM img_upload_award_tag iuat
+                    INNER JOIN activity_award_master aam ON aam.id = iuat.award_id
+                    WHERE iuat.img_upload_id IN ({placeholders})
+                    ORDER BY COALESCE(aam.serial_no, 0) ASC, aam.id ASC
+                    """,
+                    tuple(img_upload_ids),
+                )
+                for tag_row in normalize_record_rows(cursor.fetchall() or []):
+                    upload_id = int(tag_row.get("img_upload_id") or 0)
+                    if upload_id <= 0:
                         continue
-                    if det_score_min is not None and not any(score >= det_score_min for score in det_scores):
-                        continue
-                    if det_score_max is not None and not any(score <= det_score_max for score in det_scores):
-                        continue
-                    filtered_rows.append(row)
-                aggregated_rows = filtered_rows
+                    award_tags_map.setdefault(upload_id, []).append(
+                        {
+                            "award_id": int(tag_row.get("award_id") or 0),
+                            "serial_no": int(tag_row.get("serial_no") or 0),
+                            "award_category": tag_row.get("award_category") or "",
+                            "activity_item": tag_row.get("activity_item") or "",
+                            "mapped_award": tag_row.get("mapped_award") or "",
+                            "award_name": tag_row.get("award_name") or "",
+                        }
+                    )
+            for row in aggregated_rows:
+                upload_id = int(row.get("img_upload_id") or 0)
+                row["is_video_pick"] = int(row.get("is_video_pick") or 0)
+                row["award_tags"] = award_tags_map.get(upload_id, [])
 
-            rows = sorted(
-                aggregated_rows,
-                key=lambda r: (
-                    _to_naive_datetime(r.get("record_create_time") or r.get("photo_create_time")) or datetime.min,
-                    int(r.get("img_upload_id") or 0),
-                ),
-                reverse=True,
+            logger.info(
+                "query-ui-advanced photo timings count_ms=%s page_id_ms=%s detail_ms=%s items=%s total=%s year=%s years=%s",
+                count_elapsed_ms,
+                page_elapsed_ms,
+                detail_elapsed_ms,
+                len(aggregated_rows),
+                total,
+                year,
+                years,
             )
+            return {
+                "total": total,
+                "page": page,
+                "page_size": limit,
+                "total_pages": max((total + limit - 1) // limit, 1),
+                "result_mode": normalized_mode,
+                "items": aggregated_rows,
+            }
+
+        conditions, params = build_advanced_conditions(
+            dept=dept,
+            year=year,
+            years=years,
+            team=team,
+            name=name,
+            start_time=start_time,
+            end_time=end_time,
+            taken_start_time=taken_start_time,
+            taken_end_time=taken_end_time,
+            det_score_min=None,
+            det_score_max=None,
+            reco_count=reco_count,
+            activity_schedule_id=activity_schedule_id,
+            recognition_status=recognition_status,
+            mark_type=mark_type,
+            award_ids=award_ids,
+        )
+        offset = max(page - 1, 0) * limit
+
+        where_clause = ""
+        if conditions:
+            where_clause = "WHERE " + " AND ".join(conditions)
+        base_where = "COALESCE(iu.is_deleted, 0) = 0"
+        if where_clause:
+            where_clause = where_clause + " AND " + base_where
         else:
-            if det_score_min is not None or det_score_max is not None:
-                filtered_rows = []
-                for row in rows:
-                    reco_res = row.get("reco_res")
-                    if not isinstance(reco_res, list):
+            where_clause = "WHERE " + base_where
+
+        sql = f"""
+        SELECT
+            rr.id,
+            rr.id AS reco_result_id,
+            iu.id AS img_upload_id,
+            COALESCE(rr.photo_uuid, iu.photo_uuid) AS photo_uuid,
+            COALESCE(rr.origin_full_path, iu.origin_full_path) AS origin_full_path,
+            COALESCE(rr.thumbs_full_path, iu.thumbs_full_path) AS thumbs_full_path,
+            COALESCE(rr.photo_taken_time, iu.photo_taken_time) AS photo_taken_time,
+            iu.photo_file_time,
+            iu.img_score AS image_score,
+            COALESCE(rr.reco_count, 0) AS reco_count,
+            COALESCE(rr.reco_unknow, 0) AS reco_unknow,
+            rr.reco_name,
+            rr.reco_res,
+            COALESCE(iu.photo_file_time, rr.create_time, iu.create_time) AS photo_create_time,
+            COALESCE(rr.create_time, iu.create_time) AS record_create_time,
+            COALESCE(rr.update_time, iu.update_time) AS update_time,
+            COALESCE(iu.reco_error, '') AS reco_error,
+            COALESCE(iu.reco_status, 'PENDING') AS reco_status_raw,
+            COALESCE(iu.is_video_pick, 0) AS is_video_pick,
+            CASE
+              WHEN COALESCE(iu.reco_status, 'PENDING') = 'FAILED' THEN 'FAILED'
+              WHEN rr.id IS NULL THEN 'PENDING'
+              WHEN COALESCE(iu.reco_status, 'PENDING') = 'DONE'
+                   AND COALESCE(rr.reco_count, 0) > 0
+                   AND (
+                     LOWER(COALESCE(rr.reco_name, '')) LIKE '%"unknown"%'
+                     OR LOWER(COALESCE(rr.reco_name, '')) = 'unknown'
+                   ) THEN 'MIXED'
+              WHEN LOWER(COALESCE(rr.reco_name, '')) LIKE '%"unknown"%'
+                   OR LOWER(COALESCE(rr.reco_name, '')) = 'unknown' THEN
+                   CASE
+                     WHEN COALESCE(rr.reco_count, 0) = 0 THEN 'UNKNOWN'
+                     ELSE 'MIXED'
+                   END
+              WHEN COALESCE(iu.reco_status, 'PENDING') = 'DONE' THEN 'DONE'
+              ELSE COALESCE(iu.reco_status, 'PENDING')
+            END AS recognition_status,
+            CASE
+              WHEN LOWER(COALESCE(rr.reco_name, '')) LIKE '%"unknown"%'
+                   OR LOWER(COALESCE(rr.reco_name, '')) = 'unknown' THEN 1
+              ELSE 0
+            END AS is_unknown,
+            b.dept,
+            b.year,
+            COALESCE(b.team, '') AS team,
+            COALESCE(b.name, '') AS name,
+            CASE
+              WHEN b.id IS NOT NULL THEN CONCAT(b.dept, '_', b.year, '_', COALESCE(b.team, ''), '_', COALESCE(b.name, ''))
+              WHEN LOWER(COALESCE(rr.reco_name, '')) LIKE '%"unknown"%'
+                   OR LOWER(COALESCE(rr.reco_name, '')) = 'unknown' THEN 'unknown'
+              ELSE ''
+            END AS matched_person
+        FROM img_upload iu
+        LEFT JOIN reco_result rr
+          ON (
+            (rr.photo_uuid IS NOT NULL AND rr.photo_uuid = iu.photo_uuid)
+            OR rr.origin_full_path = iu.origin_full_path
+          )
+          AND COALESCE(rr.is_deleted, 0) = 0
+        LEFT JOIN base b
+          ON JSON_SEARCH(
+            COALESCE(rr.reco_name, '[]'),
+            'one',
+            CONCAT(b.dept, '_', b.year, '_', COALESCE(b.team, ''), '_', COALESCE(b.name, ''))
+          ) IS NOT NULL
+        {where_clause}
+        ORDER BY COALESCE(rr.create_time, iu.create_time) DESC, iu.id DESC
+        """
+
+        query_started = time.perf_counter()
+        cursor.execute(sql, tuple(params))
+        rows = normalize_record_rows(cursor.fetchall())
+        query_elapsed_ms = int((time.perf_counter() - query_started) * 1000)
+
+        if det_score_min is not None or det_score_max is not None:
+            filtered_rows = []
+            for row in rows:
+                reco_res = row.get("reco_res")
+                if not isinstance(reco_res, list):
+                    continue
+                det_scores = []
+                for entry in reco_res:
+                    if not isinstance(entry, dict):
                         continue
-                    det_scores = []
-                    for entry in reco_res:
-                        if not isinstance(entry, dict):
-                            continue
-                        value = entry.get("det_score")
-                        if value is None:
-                            continue
-                        try:
-                            det_scores.append(float(value))
-                        except (TypeError, ValueError):
-                            continue
-                    if not det_scores:
+                    value = entry.get("det_score")
+                    if value is None:
                         continue
-                    if det_score_min is not None and not any(score >= det_score_min for score in det_scores):
+                    try:
+                        det_scores.append(float(value))
+                    except (TypeError, ValueError):
                         continue
-                    if det_score_max is not None and not any(score <= det_score_max for score in det_scores):
-                        continue
-                    filtered_rows.append(row)
-                rows = filtered_rows
+                if not det_scores:
+                    continue
+                if det_score_min is not None and not any(score >= det_score_min for score in det_scores):
+                    continue
+                if det_score_max is not None and not any(score <= det_score_max for score in det_scores):
+                    continue
+                filtered_rows.append(row)
+            rows = filtered_rows
+
         total = len(rows)
         rows = rows[offset: offset + limit]
 
@@ -3625,6 +4015,14 @@ def query_advanced_recognition_records(
             row["is_video_pick"] = int(row.get("is_video_pick") or 0)
             row["award_tags"] = award_tags_map.get(upload_id, [])
 
+        logger.info(
+            "query-ui-advanced detail timings query_ms=%s items=%s total=%s year=%s years=%s",
+            query_elapsed_ms,
+            len(rows),
+            total,
+            year,
+            years,
+        )
         return {
             "total": total,
             "page": page,
@@ -3660,6 +4058,7 @@ def query_advanced_preview_count(
     ensure_activity_tables()
     ensure_recognition_soft_delete_schema()
     ensure_photo_mark_schema()
+    ensure_photo_query_indexes()
     db, cursor = get_db_cursor()
     try:
         conditions, params = build_advanced_conditions(
@@ -3709,24 +4108,34 @@ def query_advanced_preview_count(
             {where_clause}
             """
         else:
+            def _build_photo_path_subquery(join_key: str) -> str:
+                join_expr = _build_photo_join_expr(join_key)
+                return f"""
+                SELECT
+                    iu.id AS img_upload_id
+                FROM img_upload iu
+                LEFT JOIN reco_result rr
+                  ON ({join_expr})
+                  AND COALESCE(rr.is_deleted, 0) = 0
+                {where_clause}
+                GROUP BY iu.id
+                """
+
+            photo_uuid_path_sql = _build_photo_path_subquery("photo_uuid")
+            origin_path_sql = _build_photo_path_subquery("origin_full_path")
             sql = f"""
-            SELECT COUNT(DISTINCT iu.id) AS total_count
-            FROM img_upload iu
-            LEFT JOIN reco_result rr
-              ON (
-                (rr.photo_uuid IS NOT NULL AND rr.photo_uuid = iu.photo_uuid)
-                OR rr.origin_full_path = iu.origin_full_path
-              )
-              AND COALESCE(rr.is_deleted, 0) = 0
-            LEFT JOIN base b
-              ON JSON_SEARCH(
-                COALESCE(rr.reco_name, '[]'),
-                'one',
-                CONCAT(b.dept, '_', b.year, '_', COALESCE(b.team, ''), '_', COALESCE(b.name, ''))
-              ) IS NOT NULL
-            {where_clause}
+            SELECT COUNT(*) AS total_count
+            FROM (
+                SELECT img_upload_id
+                FROM (
+                    {photo_uuid_path_sql}
+                    UNION ALL
+                    {origin_path_sql}
+                ) photo_matches
+                GROUP BY img_upload_id
+            ) counted
             """
-        cursor.execute(sql, tuple(params))
+        cursor.execute(sql, tuple(params + params) if normalized_mode != "detail" else tuple(params))
         row = cursor.fetchone() or {}
         return int(row.get("total_count") or 0)
     finally:
