@@ -328,6 +328,13 @@ def render_clean_home_html() -> str:
               </div>
             </section>
             <section class="group">
+              <h2>工具程式上傳監看</h2>
+              <p>查看各台筆電的上傳作業、目前進度與最近狀態，方便快速確認哪一台正在傳檔。</p>
+              <div class="links">
+                <a class="button secondary" href="/laptop-tool-upload-monitor">AI人臉辨識系統工具程式上傳作業檢視</a>
+              </div>
+            </section>
+            <section class="group">
               <h2>活動照片辨識查詢</h2>
               <p>依人員、建立時間、拍攝時間與活動照片結果條件進行查詢，並可查看縮圖與匯出 CSV。</p>
               <div class="links">
@@ -350,6 +357,269 @@ def render_clean_home_html() -> str:
     """
 
 
+def render_laptop_tool_upload_monitor_html() -> str:
+    return """
+    <!DOCTYPE html>
+    <html lang="zh-Hant">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>AI人臉辨識系統工具程式上傳作業檢視</title>
+      <style>
+        :root {
+          --bg: #f4efe7;
+          --panel: #fffdfa;
+          --ink: #1f2937;
+          --muted: #64748b;
+          --line: #d8cfbf;
+          --accent: #0f766e;
+          --accent-2: #92400e;
+          --good: #15803d;
+          --bad: #b91c1c;
+          --info: #1d4ed8;
+        }
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: "Segoe UI", "Noto Sans TC", sans-serif; background: linear-gradient(180deg, #e8ddcd, var(--bg)); color: var(--ink); }
+        .wrap { max-width: 1320px; margin: 0 auto; padding: 28px 18px 56px; }
+        .hero { background: var(--panel); border: 1px solid var(--line); border-radius: 22px; padding: 24px; box-shadow: 0 16px 40px rgba(56, 46, 24, .08); }
+        h1 { margin: 0 0 8px; font-size: 32px; }
+        .sub { margin: 0; color: var(--muted); line-height: 1.7; }
+        .toolbar { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; align-items: end; }
+        .field { display: flex; flex-direction: column; gap: 6px; }
+        .field span { font-weight: 700; }
+        input[type="text"] { min-width: 220px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+        label.check { display: inline-flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+        .btn, button { display: inline-flex; align-items: center; justify-content: center; padding: 10px 14px; border-radius: 12px; border: 0; text-decoration: none; color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-2)); cursor: pointer; font-weight: 700; }
+        .btn.secondary, button.secondary { background: #6b7280; }
+        .btn.ghost { background: #e2e8f0; color: #111827; }
+        .summary-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }
+        .summary-card { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 14px; }
+        .summary-card strong { display: block; font-size: 28px; line-height: 1.1; }
+        .summary-card span { color: var(--muted); font-size: 14px; }
+        .panel { margin-top: 18px; background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 18px; box-shadow: 0 12px 32px rgba(41, 33, 18, .06); }
+        .panel h2 { margin: 0 0 12px; font-size: 22px; }
+        .hint { color: var(--muted); margin: 0 0 10px; line-height: 1.6; }
+        .status { margin-top: 14px; padding: 10px 12px; border-radius: 10px; background: #eef8f6; color: var(--accent); white-space: pre-wrap; }
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #e8dfd0; vertical-align: top; }
+        th { color: var(--muted); font-size: 13px; }
+        td { font-size: 14px; }
+        .badge { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+        .badge.queued { background: #e2e8f0; color: #334155; }
+        .badge.running { background: #dbeafe; color: var(--info); }
+        .badge.done { background: #dcfce7; color: var(--good); }
+        .badge.failed { background: #fee2e2; color: var(--bad); }
+        .badge.unknown { background: #f3f4f6; color: #6b7280; }
+        .progress { width: 100%; height: 10px; border-radius: 999px; background: #e5e7eb; overflow: hidden; }
+        .progress > span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), #2dd4bf); }
+        .stack { display: grid; gap: 8px; }
+        .small { color: var(--muted); font-size: 12px; }
+        .foot { margin-top: 14px; color: var(--muted); }
+        .empty { padding: 14px; border: 1px dashed #d6c9b5; border-radius: 14px; color: var(--muted); background: #fff; }
+        @media (max-width: 1200px) {
+          .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        }
+        @media (max-width: 760px) {
+          .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+          .toolbar { align-items: stretch; }
+          input[type="text"] { min-width: 0; width: 100%; }
+        }
+      </style>
+    </head>
+    <body>
+      <div class="wrap">
+        <div class="hero">
+          <h1>AI人臉辨識系統工具程式上傳作業檢視</h1>
+          <p class="sub">只讀監看頁，集中查看各台筆電上傳作業的即時狀態、最近更新與失敗摘要，不影響既有上傳與 commit 流程。</p>
+          <div class="toolbar">
+            <div class="field">
+              <span>筆電編號（device_id）</span>
+              <input id="deviceFilter" type="text" placeholder="留空表示全部" />
+            </div>
+            <label class="check">
+              <input id="activeOnly" type="checkbox" />
+              <span>只看上傳中</span>
+            </label>
+            <div class="field">
+              <span>顯示筆數</span>
+              <input id="limitInput" type="text" value="30" />
+            </div>
+            <button id="refreshBtn" type="button">重新整理</button>
+            <a class="btn ghost" href="/">回首頁</a>
+          </div>
+        </div>
+
+        <div class="summary-grid">
+          <div class="summary-card"><strong id="activeDeviceCount">0</strong><span>上傳中筆電</span></div>
+          <div class="summary-card"><strong id="activeJobCount">0</strong><span>上傳中 Job</span></div>
+          <div class="summary-card"><strong id="totalJobCount">0</strong><span>總 Job 數</span></div>
+          <div class="summary-card"><strong id="uploadedTotal">0</strong><span>累計上傳數</span></div>
+          <div class="summary-card"><strong id="committedTotal">0</strong><span>累計提交數</span></div>
+          <div class="summary-card"><strong id="failedTotal">0</strong><span>累計失敗數</span></div>
+        </div>
+
+        <section class="panel">
+          <h2>目前上傳中</h2>
+          <p class="hint">顯示 status 為 QUEUED / RUNNING 的作業，方便快速查看哪幾台筆電正在上傳。</p>
+          <div id="activeJobs" class="table-wrap"></div>
+        </section>
+
+        <section class="panel">
+          <h2>最近作業</h2>
+          <p class="hint">顯示最近更新的作業；可搭配上方 device_id 過濾。</p>
+          <div id="recentJobs" class="table-wrap"></div>
+        </section>
+
+        <div id="status" class="status">載入中...</div>
+        <div class="foot">提示：此頁每 15 秒自動更新一次，頁面停留時可即時看到新的上傳狀態。</div>
+      </div>
+      <script>
+        const ids = {
+          deviceFilter: document.getElementById('deviceFilter'),
+          activeOnly: document.getElementById('activeOnly'),
+          limitInput: document.getElementById('limitInput'),
+          refreshBtn: document.getElementById('refreshBtn'),
+          activeDeviceCount: document.getElementById('activeDeviceCount'),
+          activeJobCount: document.getElementById('activeJobCount'),
+          totalJobCount: document.getElementById('totalJobCount'),
+          uploadedTotal: document.getElementById('uploadedTotal'),
+          committedTotal: document.getElementById('committedTotal'),
+          failedTotal: document.getElementById('failedTotal'),
+          activeJobs: document.getElementById('activeJobs'),
+          recentJobs: document.getElementById('recentJobs'),
+          status: document.getElementById('status'),
+        };
+
+        function esc(value) {
+          return String(value ?? '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
+        }
+
+        function badge(status, label) {
+          const key = String(status || '').toLowerCase();
+          return `<span class="badge ${key || 'unknown'}">${esc(label || status || '未知')}</span>`;
+        }
+
+        function progressBar(pct) {
+          const safe = Math.max(0, Math.min(100, Number(pct || 0)));
+          return `<div class="progress" title="${safe}%"><span style="width:${safe}%"></span></div>`;
+        }
+
+        function jobRowsHtml(items) {
+          if (!items || !items.length) {
+            return '<div class="empty">目前沒有資料。</div>';
+          }
+          const rows = items.map(item => {
+            const jobId = esc(item.job_id);
+            const statusBadge = badge(item.status, item.status_label);
+            const device = esc(item.device_id || '');
+            const laptop = esc(item.laptop_label || '');
+            const model = esc(item.model_version || '');
+            const total = Number(item.total_count || 0);
+            const uploaded = Number(item.uploaded_count || 0);
+            const committed = Number(item.committed_count || 0);
+            const failed = Number(item.failed_count || 0);
+            const progress = Number(item.progress_pct || 0);
+            const commitPct = Number(item.commit_pct || 0);
+            const updated = esc(item.updated_at || '');
+            const finished = esc(item.finished_at || '');
+            const errorSummary = esc(item.error_summary || '');
+            return `
+              <tr>
+                <td>
+                  <div class="stack">
+                    <div><code>${jobId}</code> ${statusBadge}</div>
+                    <div class="small">裝置：<strong>${device || 'N/A'}</strong>　標籤：${laptop || 'N/A'}　模型：${model || 'N/A'}</div>
+                    <div class="small">更新時間：${updated || 'N/A'}${finished ? `　完成時間：${finished}` : ''}</div>
+                  </div>
+                </td>
+                <td>
+                  <div class="stack">
+                    ${progressBar(progress)}
+                    <div class="small">上傳 ${uploaded} / ${total} (${progress}%)</div>
+                    <div class="small">提交 ${committed} / ${total} (${commitPct}%)　失敗 ${failed}</div>
+                  </div>
+                </td>
+                <td>${errorSummary ? `<div class="small" style="white-space:pre-wrap;">${errorSummary}</div>` : '<span class="small">-</span>'}</td>
+                <td><a href="/laptop-tool/upload-batch/${encodeURIComponent(item.job_id || '')}" target="_blank" rel="noreferrer">JSON</a></td>
+              </tr>
+            `;
+          }).join('');
+          return `
+            <table>
+              <thead>
+                <tr>
+                  <th style="min-width:360px;">作業資訊</th>
+                  <th style="min-width:260px;">進度</th>
+                  <th style="min-width:300px;">錯誤摘要</th>
+                  <th style="width:80px;">檢視</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          `;
+        }
+
+        function setSummary(summary) {
+          ids.activeDeviceCount.textContent = String(summary.active_device_count || 0);
+          ids.activeJobCount.textContent = String(summary.active_job_count || 0);
+          ids.totalJobCount.textContent = String(summary.total_job_count || 0);
+          ids.uploadedTotal.textContent = String(summary.uploaded_total || 0);
+          ids.committedTotal.textContent = String(summary.committed_total || 0);
+          ids.failedTotal.textContent = String(summary.failed_total || 0);
+        }
+
+        function setStatus(text, isError = false) {
+          ids.status.textContent = text;
+          ids.status.style.background = isError ? '#fee2e2' : '#eef8f6';
+          ids.status.style.color = isError ? '#b91c1c' : '#0f766e';
+        }
+
+        async function loadData() {
+          const params = new URLSearchParams();
+          params.set('limit', String(Math.max(1, Math.min(100, Number(ids.limitInput.value || 30) || 30))));
+          const deviceId = String(ids.deviceFilter.value || '').trim();
+          if (deviceId) params.set('device_id', deviceId);
+          if (ids.activeOnly.checked) params.set('active_only', '1');
+          const response = await fetch(`/laptop-tool/upload-monitor/data?${params.toString()}`, { cache: 'no-store' });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.detail || '載入上傳監看資料失敗');
+          setSummary(payload.summary || {});
+          ids.activeJobs.innerHTML = jobRowsHtml(payload.active_jobs || []);
+          ids.recentJobs.innerHTML = jobRowsHtml(payload.recent_jobs || []);
+          const filters = payload.filters || {};
+          const activeCount = Number(payload.summary?.active_job_count || 0);
+          const deviceText = filters.device_id ? `，device_id=${filters.device_id}` : '';
+          const activeText = filters.active_only ? '，只看上傳中' : '';
+          const limitText = filters.limit ? `，顯示筆數=${filters.limit}` : '';
+          setStatus(`已更新監看資料：上傳中 Job ${activeCount} 筆${deviceText}${activeText}${limitText}。最後更新：${payload.summary?.last_updated_at || 'N/A'}`);
+        }
+
+        ids.refreshBtn.addEventListener('click', async () => {
+          try { await loadData(); } catch (error) { setStatus(error.message || String(error), true); }
+        });
+        ids.deviceFilter.addEventListener('keydown', async (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            try { await loadData(); } catch (error) { setStatus(error.message || String(error), true); }
+          }
+        });
+        ids.activeOnly.addEventListener('change', async () => {
+          try { await loadData(); } catch (error) { setStatus(error.message || String(error), true); }
+        });
+        ids.limitInput.addEventListener('change', async () => {
+          try { await loadData(); } catch (error) { setStatus(error.message || String(error), true); }
+        });
+        loadData().catch(error => setStatus(error.message || String(error), true));
+        setInterval(() => {
+          loadData().catch(error => setStatus(error.message || String(error), true));
+        }, 15000);
+      </script>
+    </body>
+    </html>
+    """
+
+
 def load_ui_template(filename: str) -> str:
     return (UI_TEMPLATE_DIR / filename).read_text(encoding="utf-8")
 
@@ -359,6 +629,131 @@ def html_no_cache_headers() -> dict[str, str]:
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
         "Expires": "0",
+    }
+
+
+def _normalize_laptop_upload_job_row(row: dict) -> dict:
+    total_count = int(row.get("total_count") or 0)
+    uploaded_count = int(row.get("uploaded_count") or 0)
+    committed_count = int(row.get("committed_count") or 0)
+    failed_count = int(row.get("failed_count") or 0)
+    status = str(row.get("status") or "").strip().upper()
+    progress_pct = round((uploaded_count / total_count) * 100, 1) if total_count > 0 else 0.0
+    commit_pct = round((committed_count / total_count) * 100, 1) if total_count > 0 else 0.0
+    return {
+        "job_id": str(row.get("job_id") or "").strip(),
+        "status": status,
+        "status_label": {
+            "QUEUED": "排隊中",
+            "RUNNING": "上傳中",
+            "DONE": "完成",
+            "FAILED": "失敗",
+        }.get(status, status or "未知"),
+        "active": status in {"QUEUED", "RUNNING"},
+        "device_id": str(row.get("device_id") or "").strip(),
+        "laptop_label": str(row.get("laptop_label") or "").strip(),
+        "model_version": str(row.get("model_version") or "").strip(),
+        "total_count": total_count,
+        "uploaded_count": uploaded_count,
+        "committed_count": committed_count,
+        "failed_count": failed_count,
+        "progress_pct": progress_pct,
+        "commit_pct": commit_pct,
+        "error_summary": str(row.get("error_summary") or "").strip(),
+        "staging_dir": str(row.get("staging_dir") or "").strip(),
+        "created_at": _format_datetime_tpe(row.get("created_at")),
+        "updated_at": _format_datetime_tpe(row.get("updated_at")),
+        "finished_at": _format_datetime_tpe(row.get("finished_at")),
+    }
+
+
+def _fetch_laptop_tool_upload_monitor_snapshot(
+    cursor,
+    *,
+    device_id: str = "",
+    active_only: bool = False,
+    limit: int = 30,
+) -> dict:
+    cursor.execute(
+        """
+        SELECT
+            COUNT(*) AS total_job_count,
+            SUM(CASE WHEN status IN ('QUEUED', 'RUNNING') THEN 1 ELSE 0 END) AS active_job_count,
+            COUNT(DISTINCT CASE WHEN status IN ('QUEUED', 'RUNNING') THEN device_id ELSE NULL END) AS active_device_count,
+            SUM(CASE WHEN status = 'DONE' THEN 1 ELSE 0 END) AS done_job_count,
+            SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) AS failed_job_count,
+            COALESCE(SUM(uploaded_count), 0) AS uploaded_total,
+            COALESCE(SUM(committed_count), 0) AS committed_total,
+            COALESCE(SUM(failed_count), 0) AS failed_total,
+            MAX(updated_at) AS last_updated_at
+        FROM laptop_upload_job
+        """
+    )
+    summary = cursor.fetchone() or {}
+
+    filters: list[str] = []
+    params: list[object] = []
+    did = str(device_id or "").strip()
+    if did:
+        filters.append("device_id = %s")
+        params.append(did)
+
+    active_filters = list(filters)
+    active_filters.append("status IN ('QUEUED', 'RUNNING')")
+    active_where = " AND ".join(active_filters) if active_filters else "1=1"
+    cursor.execute(
+        f"""
+        SELECT
+            job_id, status, device_id, laptop_label, model_version,
+            total_count, uploaded_count, committed_count, failed_count,
+            error_summary, staging_dir, created_at, updated_at, finished_at
+        FROM laptop_upload_job
+        WHERE {active_where}
+        ORDER BY COALESCE(updated_at, created_at) DESC
+        LIMIT %s
+        """,
+        tuple(params + [int(limit)]),
+    )
+    active_rows = [_normalize_laptop_upload_job_row(row) for row in (cursor.fetchall() or [])]
+
+    recent_filters = list(filters)
+    if active_only:
+        recent_filters.append("status IN ('QUEUED', 'RUNNING')")
+    recent_where = " AND ".join(recent_filters) if recent_filters else "1=1"
+    cursor.execute(
+        f"""
+        SELECT
+            job_id, status, device_id, laptop_label, model_version,
+            total_count, uploaded_count, committed_count, failed_count,
+            error_summary, staging_dir, created_at, updated_at, finished_at
+        FROM laptop_upload_job
+        WHERE {recent_where}
+        ORDER BY COALESCE(updated_at, created_at) DESC
+        LIMIT %s
+        """,
+        tuple(params + [int(limit)]),
+    )
+    recent_rows = [_normalize_laptop_upload_job_row(row) for row in (cursor.fetchall() or [])]
+
+    return {
+        "summary": {
+            "total_job_count": int(summary.get("total_job_count") or 0),
+            "active_job_count": int(summary.get("active_job_count") or 0),
+            "active_device_count": int(summary.get("active_device_count") or 0),
+            "done_job_count": int(summary.get("done_job_count") or 0),
+            "failed_job_count": int(summary.get("failed_job_count") or 0),
+            "uploaded_total": int(summary.get("uploaded_total") or 0),
+            "committed_total": int(summary.get("committed_total") or 0),
+            "failed_total": int(summary.get("failed_total") or 0),
+            "last_updated_at": _format_datetime_tpe(summary.get("last_updated_at")),
+        },
+        "filters": {
+            "device_id": did,
+            "active_only": bool(active_only),
+            "limit": int(limit),
+        },
+        "active_jobs": active_rows,
+        "recent_jobs": recent_rows,
     }
 
 
@@ -6931,6 +7326,43 @@ async def legacy_home():
 async def home():
     return HTMLResponse(render_clean_home_html())
 
+@app.get("/laptop-tool-upload-monitor", response_class=HTMLResponse)
+async def laptop_tool_upload_monitor():
+    return HTMLResponse(render_laptop_tool_upload_monitor_html(), headers=html_no_cache_headers())
+
+@app.get("/laptop-tool/upload-monitor/data")
+async def laptop_tool_upload_monitor_data(
+    limit: int = Query(30, ge=1, le=100),
+    device_id: str = Query(""),
+    active_only: bool = Query(False),
+):
+    db = None
+    cursor = None
+    try:
+        ensure_laptop_tool_tables()
+        db = mysqlconnector()
+        db.connect()
+        if db.conn is None:
+            raise RuntimeError("資料庫連線失敗")
+        cursor = db.conn.cursor(dictionary=True)
+        snapshot = _fetch_laptop_tool_upload_monitor_snapshot(
+            cursor,
+            device_id=device_id,
+            active_only=active_only,
+            limit=limit,
+        )
+        return snapshot
+    except Exception as exc:
+        logger.error("讀取工具程式上傳監看資料失敗: %s", exc)
+        return JSONResponse(status_code=500, content={"detail": f"讀取工具程式上傳監看資料失敗：{exc}"})
+    finally:
+        with contextlib.suppress(Exception):
+            if cursor:
+                cursor.close()
+        with contextlib.suppress(Exception):
+            if db:
+                db.close()
+
 @app.get("/query-ui-advanced", response_class=HTMLResponse)
 async def query_ui_advanced():
     return HTMLResponse(load_ui_template("query_ui_advanced.html"), headers=html_no_cache_headers())
@@ -7784,6 +8216,7 @@ async def laptop_tool_admin_page(request: Request):
             <a class="btn" href="/laptop-tool/config">下載設定檔（JSON）</a>
             <a class="btn" href="/laptop-tool/model-manifest">模型清單（JSON）</a>
             <a class="btn" href="/laptop-tool/download-package-zip">下載工具程式 ZIP（dist/laptop_tool）</a>
+            <a class="btn secondary" href="/laptop-tool-upload-monitor">上傳作業檢視</a>
             <a class="btn" href="/">回首頁</a>
           </div>
           {rows_html}
