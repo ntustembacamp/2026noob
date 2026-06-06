@@ -119,7 +119,10 @@ $cfgTemplate = @"
 {
   "version": "1.0",
   "server_api_base": "$serverBase",
+  "public_base_url": "$serverBase",
   "tool_release_page": "$serverBase/laptop-tool-admin",
+  "default_activity_code": "",
+  "default_photographer": "",
   "activities": [],
   "photographers": [],
   "naming_rules": {
