@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -90,6 +91,7 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".heic"}
 FORBIDDEN_ROOTS = (r"c:\activity", r"c:\uploadsource")
 NORMALIZE_MODE_OPTIONS = [("模式 A（EXIF）", "exif"), ("模式 B（活動編號）", "schedule")]
 RUN_MODE_OPTIONS = [("Server 模式", "server"), ("Local 模式", "local")]
+LAPTOP_UPLOAD_MAX_IN_FLIGHT = 3
 
 
 def _now_text() -> str:
@@ -1507,189 +1509,234 @@ class LaptopTool:
             results = []
             ok, ng, uploaded = 0, 0, 0
             total_chunks = len(files)
-            for idx, path in enumerate(files, start=1):
+
+            def _send_chunk_request(body: bytes, boundary: str) -> dict:
+                req = urllib.request.Request(
+                    f"{api}/laptop-tool/upload-batch/chunk",
+                    data=body,
+                    headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+                    method="POST",
+                )
                 try:
-                    file_size = path.stat().st_size if path.exists() else 0
-                    self.append(f"[{_now_text()}] [Local {idx}/{len(files)}] 檔案={path.name} size={file_size} ext={path.suffix}")
-                    image, image_source, image_error = _load_image_for_local(path)
-                    self.append(f"[{_now_text()}] [Local {idx}/{len(files)}] 讀圖來源={image_source} err={image_error or 'OK'}")
-                    if image is None:
-                        raise RuntimeError(f"{image_error or 'LOCAL_IMAGE_DECODE_FAIL'}：讀圖失敗，檔案={path.name}")
-                    self.append(
-                        f"[{_now_text()}] [Local {idx}/{len(files)}] image.shape={getattr(image, 'shape', None)} dtype={getattr(image, 'dtype', None)} contiguous={bool(getattr(getattr(image, 'flags', None), 'c_contiguous', False))}"
-                    )
+                    with urllib.request.urlopen(req, timeout=120) as resp:
+                        resp_body = resp.read().decode("utf-8", "replace")
+                except urllib.error.HTTPError as http_exc:
+                    detail = ""
                     try:
-                        names, faces = face_recognition.recognition(image)
-                    except Exception as reco_exc:
-                        reco_text = str(reco_exc)
-                        if reco_text.startswith((
-                            "LOCAL_RECO_FAIL",
-                            "LOCAL_IMAGE_INVALID",
-                            "LOCAL_IMAGE_DECODE_FAIL",
-                            "LOCAL_FACEANALYSIS_ASSERT",
-                            "LOCAL_MODEL_INPUT_INVALID",
-                            "LOCAL_INIT_TIMEOUT",
-                            "LOCAL_MODEL_GET_NONE_SHAPE",
-                            "LOCAL_MODEL_GET_ASSERT",
-                            "LOCAL_MODEL_GET_ATTR",
-                            "LOCAL_MODEL_GET_OTHER",
-                        )):
-                            raise
-                        raise RuntimeError(f"LOCAL_RECO_FAIL: {reco_text}") from reco_exc
-                    if names is None:
-                        names = []
-                    if faces is None:
-                        faces = []
-                    face_position = []
-                    det_score = None
-                    for face in faces:
-                        if isinstance(face, dict):
-                            score = face.get("det_score")
-                            bbox_val = face.get("bbox")
-                            face_name = face.get("name") or "unknown"
-                        else:
-                            score = getattr(face, "det_score", None)
-                            bbox_val = getattr(face, "bbox", None)
-                            face_name = getattr(face, "name", None) or "unknown"
-                        try:
-                            score = float(score)
-                        except Exception:
-                            score = None
-                        if score is not None:
-                            det_score = max(det_score, score) if det_score is not None else score
-                        bbox_list = bbox_val.tolist() if hasattr(bbox_val, "tolist") else bbox_val
-                        if bbox_list is None:
-                            continue
-                        face_position.append({"name": face_name, "det_score": score, "bbox": bbox_list})
-
-                    pyiqa_score = None
-                    if self.enable_pyiqa.get():
-                        if metric is None:
-                            self.append(f"[{_now_text()}] [Local {idx}/{len(files)}] pyiqa 未啟用，將略過。")
-                        else:
-                            try:
-                                score_input = image[:, :, ::-1]
-                                pyiqa_score = float(metric(score_input).item())
-                            except Exception as exc:
-                                pyiqa_score = None
-                                self.append(f"[{_now_text()}] [Local {idx}/{len(files)}] pyiqa 計算失敗：{exc}")
-
-                    exif_dt = _extract_exif_dt(path)
-                    file_dt = datetime.fromtimestamp(path.stat().st_mtime)
-                    taken_dt = exif_dt or file_dt
-                    taken_time_source = "EXIF" if exif_dt else "FILE_TIME"
-                    reco_status = "DONE" if len(face_position) > 0 else "NO_FACE"
-                    photo_uuid = f"{did}_{uuid4().hex[:24]}"
-                    item = {
-                        "photo_uuid": photo_uuid,
-                        "file_name": path.name,
-                        "photo_taken_time": taken_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                        "photo_file_time": file_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                        "taken_time_source": taken_time_source,
-                        "human_activity_date": "",
-                        "human_activity_time": "",
-                        "human_activity_name": "",
-                        "human_owner_team": "",
-                        "human_location": "",
-                        "human_photographer": photographer,
-                        "reco_name": names or [],
-                        "reco_res": face_position,
-                        "reco_count": len([x for x in (names or []) if str(x).lower() != "unknown"]),
-                        "reco_unknow": len([x for x in (names or []) if str(x).lower() == "unknown"]),
-                        "reco_status": reco_status,
-                        "reco_error": "",
-                        "img_score": pyiqa_score,
-                        "det_score": det_score,
-                    }
-                    boundary = "----CodexLaptopToolBoundary"
-                    meta_json = json.dumps(item, ensure_ascii=False)
-                    file_bytes = path.read_bytes()
-                    parts = []
-
-                    def add_field(name, value):
-                        parts.append(f"--{boundary}\r\n".encode("utf-8"))
-                        parts.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
-                        parts.append(str(value).encode("utf-8"))
-                        parts.append(b"\r\n")
-
-                    add_field("job_id", upload_job_id)
-                    add_field("seq_no", idx)
-                    add_field("item_json", meta_json)
-                    for field_name in ("origin_file", "thumb_file"):
-                        parts.append(f"--{boundary}\r\n".encode("utf-8"))
-                        parts.append(
-                            f'Content-Disposition: form-data; name="{field_name}"; filename="{path.name}"\r\n'.encode("utf-8")
-                        )
-                        parts.append(b"Content-Type: application/octet-stream\r\n\r\n")
-                        parts.append(file_bytes)
-                        parts.append(b"\r\n")
-                    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
-                    body = b"".join(parts)
-                    req = urllib.request.Request(
-                        f"{api}/laptop-tool/upload-batch/chunk",
-                        data=body,
-                        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-                        method="POST",
-                    )
-                    try:
-                        with urllib.request.urlopen(req, timeout=120) as resp:
-                            resp_body = resp.read().decode("utf-8", "replace")
-                    except urllib.error.HTTPError as http_exc:
-                        detail = ""
-                        try:
-                            detail = http_exc.read().decode("utf-8", "replace")
-                        except Exception:
-                            detail = str(http_exc)
-                        raise RuntimeError(f"上傳批次失敗 HTTP {http_exc.code}：{detail[:500]}") from http_exc
-                    _ = json.loads(resp_body)
-                    results.append(item)
-                    uploaded += 1
-                    percent = int((uploaded / max(total_chunks, 1)) * 100)
-                    self._set_progress_safe(float(percent), f"上傳進度：{percent}% ({uploaded}/{total_chunks})")
-                    self.upload_progress_text.set(f"上傳進度：{percent}% ({uploaded}/{total_chunks})")
-
-                    dst_ok = reco_success / path.name
-                    m = 1
-                    while dst_ok.exists():
-                        dst_ok = reco_success / f"{Path(path.name).stem}_{m}{Path(path.name).suffix}"
-                        m += 1
-                    shutil.move(str(path), str(dst_ok))
-                    ok += 1
-                    self.append(f"[{_now_text()}] [Local {idx}/{len(files)}] 成功：{path.name}，uploaded={uploaded}")
-                except Exception as exc:
-                    ng += 1
-                    fail_file_dt = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-                    results.append(
-                        {
-                            "photo_uuid": f"{did}_{uuid4().hex[:24]}",
-                            "file_name": path.name,
-                            "file_path": str(path),
-                            "photo_taken_time": fail_file_dt,
-                            "photo_file_time": fail_file_dt,
-                            "taken_time_source": "FILE_TIME",
-                            "reco_name": [],
-                            "reco_res": [],
-                            "reco_count": 0,
-                            "reco_unknow": 0,
-                            "reco_status": "FAILED",
-                            "reco_error": str(exc),
-                            "img_score": None,
-                            "det_score": None,
-                            "error_reason": str(exc),
-                        }
-                    )
-                    try:
-                        dst_fail = reco_fail / path.name
-                        m = 1
-                        while dst_fail.exists():
-                            dst_fail = reco_fail / f"{Path(path.name).stem}_{m}{Path(path.name).suffix}"
-                            m += 1
-                        shutil.move(str(path), str(dst_fail))
+                        detail = http_exc.read().decode("utf-8", "replace")
                     except Exception:
-                        pass
-                    self.append(f"[{_now_text()}] [Local {idx}/{len(files)}] 失敗：{path.name}，原因：{exc}")
+                        detail = str(http_exc)
+                    raise RuntimeError(f"上傳 chunk 失敗 HTTP {http_exc.code}：{detail[:500]}") from http_exc
+                return json.loads(resp_body)
 
-            self.append(f"[{_now_text()}] 提交 commit：job_id={upload_job_id}")
+            def _record_success(path: Path, item: dict):
+                nonlocal uploaded, ok
+                results.append(item)
+                uploaded += 1
+                percent = int((uploaded / max(total_chunks, 1)) * 100)
+                self._set_progress_safe(float(percent), f"上傳進度：{percent}% ({uploaded}/{total_chunks})")
+                self.upload_progress_text.set(f"上傳進度：{percent}% ({uploaded}/{total_chunks})")
+                dst_ok = reco_success / path.name
+                m = 1
+                while dst_ok.exists():
+                    dst_ok = reco_success / f"{Path(path.name).stem}_{m}{Path(path.name).suffix}"
+                    m += 1
+                shutil.move(str(path), str(dst_ok))
+                ok += 1
+                self.append(f"[{_now_text()}] [Local] 成功：{path.name}，uploaded={uploaded}")
+
+            def _record_failure(path: Path, item: dict, exc: Exception):
+                nonlocal ng
+                fail_item = dict(item)
+                fail_item["reco_status"] = "FAILED"
+                fail_item["reco_error"] = str(exc)
+                fail_item["error_reason"] = str(exc)
+                results.append(fail_item)
+                ng += 1
+                try:
+                    dst_fail = reco_fail / path.name
+                    m = 1
+                    while dst_fail.exists():
+                        dst_fail = reco_fail / f"{Path(path.name).stem}_{m}{Path(path.name).suffix}"
+                        m += 1
+                    shutil.move(str(path), str(dst_fail))
+                except Exception:
+                    pass
+                self.append(f"[{_now_text()}] [Local] 失敗：{path.name}，原因：{exc}")
+
+            pending_uploads = []
+
+            def _drain_one_pending():
+                task = pending_uploads.pop(0)
+                try:
+                    task["future"].result()
+                    _record_success(task["path"], task["item"])
+                except Exception as exc:
+                    _record_failure(task["path"], task["item"], exc)
+
+            with ThreadPoolExecutor(max_workers=LAPTOP_UPLOAD_MAX_IN_FLIGHT) as upload_executor:
+                for idx, path in enumerate(files, start=1):
+                    try:
+                        file_size = path.stat().st_size if path.exists() else 0
+                        self.append(f"[{_now_text()}] [Local {idx}/{len(files)}] 檔案={path.name} size={file_size} ext={path.suffix}")
+                        image, image_source, image_error = _load_image_for_local(path)
+                        self.append(f"[{_now_text()}] [Local {idx}/{len(files)}] 讀圖來源={image_source} err={image_error or 'OK'}")
+                        if image is None:
+                            raise RuntimeError(f"{image_error or 'LOCAL_IMAGE_DECODE_FAIL'}：讀圖失敗，檔案={path.name}")
+                        self.append(
+                            f"[{_now_text()}] [Local {idx}/{len(files)}] image.shape={getattr(image, 'shape', None)} dtype={getattr(image, 'dtype', None)} contiguous={bool(getattr(getattr(image, 'flags', None), 'c_contiguous', False))}"
+                        )
+                        try:
+                            names, faces = face_recognition.recognition(image)
+                        except Exception as reco_exc:
+                            reco_text = str(reco_exc)
+                            if reco_text.startswith((
+                                "LOCAL_RECO_FAIL",
+                                "LOCAL_IMAGE_INVALID",
+                                "LOCAL_IMAGE_DECODE_FAIL",
+                                "LOCAL_FACEANALYSIS_ASSERT",
+                                "LOCAL_MODEL_INPUT_INVALID",
+                                "LOCAL_INIT_TIMEOUT",
+                                "LOCAL_MODEL_GET_NONE_SHAPE",
+                                "LOCAL_MODEL_GET_ASSERT",
+                                "LOCAL_MODEL_GET_ATTR",
+                                "LOCAL_MODEL_GET_OTHER",
+                            )):
+                                raise
+                            raise RuntimeError(f"LOCAL_RECO_FAIL: {reco_text}") from reco_exc
+                        if names is None:
+                            names = []
+                        if faces is None:
+                            faces = []
+                        face_position = []
+                        det_score = None
+                        for face in faces:
+                            if isinstance(face, dict):
+                                score = face.get("det_score")
+                                bbox_val = face.get("bbox")
+                                face_name = face.get("name") or "unknown"
+                            else:
+                                score = getattr(face, "det_score", None)
+                                bbox_val = getattr(face, "bbox", None)
+                                face_name = getattr(face, "name", None) or "unknown"
+                            try:
+                                score = float(score)
+                            except Exception:
+                                score = None
+                            if score is not None:
+                                det_score = max(det_score, score) if det_score is not None else score
+                            bbox_list = bbox_val.tolist() if hasattr(bbox_val, "tolist") else bbox_val
+                            if bbox_list is None:
+                                continue
+                            face_position.append({"name": face_name, "det_score": score, "bbox": bbox_list})
+
+                        pyiqa_score = None
+                        if self.enable_pyiqa.get():
+                            if metric is None:
+                                self.append(f"[{_now_text()}] [Local {idx}/{len(files)}] pyiqa 未啟用，將略過。")
+                            else:
+                                try:
+                                    score_input = image[:, :, ::-1]
+                                    pyiqa_score = float(metric(score_input).item())
+                                except Exception as exc:
+                                    pyiqa_score = None
+                                    self.append(f"[{_now_text()}] [Local {idx}/{len(files)}] pyiqa 計算失敗：{exc}")
+
+                        exif_dt = _extract_exif_dt(path)
+                        file_dt = datetime.fromtimestamp(path.stat().st_mtime)
+                        taken_dt = exif_dt or file_dt
+                        taken_time_source = "EXIF" if exif_dt else "FILE_TIME"
+                        reco_status = "DONE" if len(face_position) > 0 else "NO_FACE"
+                        photo_uuid = f"{did}_{uuid4().hex[:24]}"
+                        item = {
+                            "photo_uuid": photo_uuid,
+                            "file_name": path.name,
+                            "photo_taken_time": taken_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                            "photo_file_time": file_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                            "taken_time_source": taken_time_source,
+                            "human_activity_date": "",
+                            "human_activity_time": "",
+                            "human_activity_name": "",
+                            "human_owner_team": "",
+                            "human_location": "",
+                            "human_photographer": photographer,
+                            "reco_name": names or [],
+                            "reco_res": face_position,
+                            "reco_count": len([x for x in (names or []) if str(x).lower() != "unknown"]),
+                            "reco_unknow": len([x for x in (names or []) if str(x).lower() == "unknown"]),
+                            "reco_status": reco_status,
+                            "reco_error": "",
+                            "img_score": pyiqa_score,
+                            "det_score": det_score,
+                        }
+                        boundary = "----CodexLaptopToolBoundary"
+                        meta_json = json.dumps(item, ensure_ascii=False)
+                        file_bytes = path.read_bytes()
+                        parts = []
+
+                        def add_field(name, value):
+                            parts.append(f"--{boundary}\r\n".encode("utf-8"))
+                            parts.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
+                            parts.append(str(value).encode("utf-8"))
+                            parts.append(b"\r\n")
+
+                        add_field("job_id", upload_job_id)
+                        add_field("seq_no", idx)
+                        add_field("item_json", meta_json)
+                        for field_name in ("origin_file", "thumb_file"):
+                            parts.append(f"--{boundary}\r\n".encode("utf-8"))
+                            parts.append(
+                                f'Content-Disposition: form-data; name="{field_name}"; filename="{path.name}"\r\n'.encode("utf-8")
+                            )
+                            parts.append(b"Content-Type: application/octet-stream\r\n\r\n")
+                            parts.append(file_bytes)
+                            parts.append(b"\r\n")
+                        parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+                        body = b"".join(parts)
+                        pending_uploads.append(
+                            {
+                                "path": path,
+                                "item": item,
+                                "future": upload_executor.submit(_send_chunk_request, body, boundary),
+                            }
+                        )
+                        if len(pending_uploads) >= LAPTOP_UPLOAD_MAX_IN_FLIGHT:
+                            _drain_one_pending()
+                    except Exception as exc:
+                        fail_file_dt = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                        results.append(
+                            {
+                                "photo_uuid": f"{did}_{uuid4().hex[:24]}",
+                                "file_name": path.name,
+                                "file_path": str(path),
+                                "photo_taken_time": fail_file_dt,
+                                "photo_file_time": fail_file_dt,
+                                "taken_time_source": "FILE_TIME",
+                                "reco_name": [],
+                                "reco_res": [],
+                                "reco_count": 0,
+                                "reco_unknow": 0,
+                                "reco_status": "FAILED",
+                                "reco_error": str(exc),
+                                "img_score": None,
+                                "det_score": None,
+                                "error_reason": str(exc),
+                            }
+                        )
+                        ng += 1
+                        try:
+                            dst_fail = reco_fail / path.name
+                            m = 1
+                            while dst_fail.exists():
+                                dst_fail = reco_fail / f"{Path(path.name).stem}_{m}{Path(path.name).suffix}"
+                                m += 1
+                            shutil.move(str(path), str(dst_fail))
+                        except Exception:
+                            pass
+                        self.append(f"[{_now_text()}] [Local {idx}/{len(files)}] 失敗：{path.name}，原因：{exc}")
+
+                while pending_uploads:
+                    _drain_one_pending()
             commit_payload = {"job_id": upload_job_id}
             commit_data = _post_json(f"{api}/laptop-tool/upload-batch/commit", commit_payload, timeout=180)
             committed = _to_int(commit_data.get("committed_count"), 0)

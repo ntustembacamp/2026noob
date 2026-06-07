@@ -6668,6 +6668,13 @@ def ensure_laptop_tool_tables():
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        with contextlib.suppress(Exception):
+            cursor.execute(
+                """
+                ALTER TABLE laptop_upload_job
+                ADD INDEX idx_laptop_upload_job_device_status_updated (device_id, status, updated_at)
+                """
+            )
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS laptop_upload_job_item (
@@ -6690,6 +6697,13 @@ def ensure_laptop_tool_tables():
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        with contextlib.suppress(Exception):
+            cursor.execute(
+                """
+                ALTER TABLE laptop_upload_job_item
+                ADD INDEX idx_laptop_upload_job_item_job_status_seq (job_id, status, seq_no)
+                """
+            )
         db.conn.commit()
     finally:
         with contextlib.suppress(Exception):
@@ -8851,11 +8865,12 @@ async def laptop_tool_model_manifest():
 async def laptop_tool_upload_batch_start(payload: LaptopToolUploadStartPayload):
     ensure_activity_tables_once()
     ensure_laptop_tool_tables()
+    device_id = str(payload.device_id or "").strip()
+    if not device_id:
+        return JSONResponse(status_code=400, content={"detail": "device_id 不可空白。"})
     now_str = _now_tpe().strftime("%Y%m%d_%H%M%S")
     rand = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
     job_id = f"lap_{now_str}_{rand}"
-    staging_dir = LAPTOP_TOOL_STAGING_ROOT / job_id
-    staging_dir.mkdir(parents=True, exist_ok=True)
     db = None
     cursor = None
     try:
@@ -8866,11 +8881,34 @@ async def laptop_tool_upload_batch_start(payload: LaptopToolUploadStartPayload):
         cursor = db.conn.cursor()
         cursor.execute(
             """
+            SELECT job_id
+            FROM laptop_upload_job
+            WHERE device_id = %s AND status IN ('QUEUED', 'RUNNING')
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT 1
+            """,
+            (device_id,),
+        )
+        active_job = cursor.fetchone()
+        if active_job:
+            active_job_id = active_job.get("job_id") if isinstance(active_job, dict) else (active_job[0] if active_job else None)
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "同一台裝置已有上傳作業進行中，請先完成或停止現有 job。",
+                    "job_id": active_job_id,
+                    "device_id": device_id,
+                },
+            )
+        staging_dir = LAPTOP_TOOL_STAGING_ROOT / job_id
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        cursor.execute(
+            """
             INSERT INTO laptop_upload_job (
                 job_id, status, device_id, laptop_label, model_version, total_count, staging_dir
             ) VALUES (%s, 'QUEUED', %s, %s, %s, %s, %s)
             """,
-            (job_id, payload.device_id, payload.laptop_label, payload.model_version, payload.total_count, str(staging_dir)),
+            (job_id, device_id, payload.laptop_label, payload.model_version, payload.total_count, str(staging_dir)),
         )
         db.conn.commit()
         return {"job_id": job_id, "status": "QUEUED", "staging_dir": str(staging_dir)}
@@ -9349,7 +9387,7 @@ if MULTIPART_AVAILABLE:
             thumbs_root.mkdir(parents=True, exist_ok=True)
             commit_started = time.perf_counter()
             reco_result_cols = _get_table_columns(cursor, "reco_result", refresh=True)
-
+            commit_batch_size = 100
             def copy_commit_artifacts(row: dict) -> dict:
                 item_id = row.get("id")
                 item_payload = {}
@@ -9395,91 +9433,117 @@ if MULTIPART_AVAILABLE:
                         "photo_uuid": photo_uuid,
                     }
 
-            copy_started = time.perf_counter()
+            copy_elapsed_total_ms = 0
+            db_elapsed_total_ms = 0
             with ThreadPoolExecutor(max_workers=max(1, min(4, len(rows) or 1))) as executor:
-                copied_rows = [future.result() for future in [executor.submit(copy_commit_artifacts, row) for row in rows]]
-            copy_elapsed_ms = int((time.perf_counter() - copy_started) * 1000)
-            db_started = time.perf_counter()
-            logger.info("laptop-tool commit copy job_id=%s rows=%s elapsed_ms=%s", payload.job_id, len(rows), copy_elapsed_ms)
-            for entry in copied_rows:
-                item_id = entry.get("item_id")
-                item_payload = entry.get("item_payload") if isinstance(entry.get("item_payload"), dict) else {}
-                item_photo_uuid = str((item_payload or {}).get("photo_uuid") or entry.get("photo_uuid") or "").strip()
-                item_file_name = _safe_leaf_name((item_payload or {}).get("file_name") or entry.get("file_name") or "")
-                if not entry.get("ok"):
-                    failed += 1
-                    error_reason = str(entry.get("error") or "未知錯誤")
+                for batch_start in range(0, len(rows), commit_batch_size):
+                    batch_rows = rows[batch_start:batch_start + commit_batch_size]
+                    if not batch_rows:
+                        continue
+                    copy_started = time.perf_counter()
+                    copied_rows = [future.result() for future in [executor.submit(copy_commit_artifacts, row) for row in batch_rows]]
+                    copy_elapsed_total_ms += int((time.perf_counter() - copy_started) * 1000)
+                    db_started = time.perf_counter()
+                    batch_committed = 0
+                    batch_failed = 0
+                    logger.info("laptop-tool commit copy job_id=%s batch_start=%s batch_rows=%s", payload.job_id, batch_start, len(batch_rows))
+                    for entry in copied_rows:
+                        item_id = entry.get("item_id")
+                        item_payload = entry.get("item_payload") if isinstance(entry.get("item_payload"), dict) else {}
+                        item_photo_uuid = str((item_payload or {}).get("photo_uuid") or entry.get("photo_uuid") or "").strip()
+                        item_file_name = _safe_leaf_name((item_payload or {}).get("file_name") or entry.get("file_name") or "")
+                        if not entry.get("ok"):
+                            batch_failed += 1
+                            error_reason = str(entry.get("error") or "未知錯誤")
+                            cursor.execute(
+                                """
+                                UPDATE laptop_upload_job_item
+                                SET status = 'FAILED', reason_code = 'COMMIT_ERROR', error_reason = %s, updated_at = NOW()
+                                WHERE id = %s
+                                """,
+                                (error_reason, item_id),
+                            )
+                            failed_items.append(
+                                {
+                                    "photo_uuid": item_photo_uuid,
+                                    "file_name": item_file_name,
+                                    "error_code": "COMMIT_COPY_ERROR",
+                                    "error_reason": error_reason,
+                                    "sql_detail": error_reason,
+                                }
+                            )
+                            continue
+                        try:
+                            _upsert_laptop_item_to_main_tables(
+                                cursor,
+                                item_payload,
+                                entry["origin_target"],
+                                entry["thumb_target"],
+                                reco_result_cols=reco_result_cols,
+                            )
+                            cursor.execute(
+                                """
+                                UPDATE laptop_upload_job_item
+                                SET status = 'DONE', reason_code = '', error_reason = NULL, updated_at = NOW()
+                                WHERE id = %s
+                                """,
+                                (item_id,),
+                            )
+                            batch_committed += 1
+                        except Exception as item_error:
+                            batch_failed += 1
+                            error_reason = str(item_error)
+                            cursor.execute(
+                                """
+                                UPDATE laptop_upload_job_item
+                                SET status = 'FAILED', reason_code = 'COMMIT_ERROR', error_reason = %s, updated_at = NOW()
+                                WHERE id = %s
+                                """,
+                                (error_reason, item_id),
+                            )
+                            failed_items.append(
+                                {
+                                    "photo_uuid": item_photo_uuid,
+                                    "file_name": item_file_name,
+                                    "error_code": "COMMIT_SQL_ERROR",
+                                    "error_reason": error_reason,
+                                    "sql_detail": error_reason,
+                                }
+                            )
+                    db.conn.commit()
+                    db_elapsed_total_ms += int((time.perf_counter() - db_started) * 1000)
+                    committed += batch_committed
+                    failed += batch_failed
                     cursor.execute(
                         """
-                        UPDATE laptop_upload_job_item
-                        SET status = 'FAILED', reason_code = 'COMMIT_ERROR', error_reason = %s, updated_at = NOW()
-                        WHERE id = %s
+                        UPDATE laptop_upload_job
+                        SET committed_count = committed_count + %s,
+                            failed_count = failed_count + %s,
+                            status = CASE WHEN %s > 0 THEN 'FAILED' ELSE 'RUNNING' END,
+                            error_summary = %s,
+                            updated_at = NOW()
+                        WHERE job_id = %s
                         """,
-                        (error_reason, item_id),
+                        (
+                            batch_committed,
+                            batch_failed,
+                            failed,
+                            json.dumps(failed_items[:50], ensure_ascii=False) if failed_items else None,
+                            payload.job_id,
+                        ),
                     )
-                    failed_items.append(
-                        {
-                            "photo_uuid": item_photo_uuid,
-                            "file_name": item_file_name,
-                            "error_code": "COMMIT_COPY_ERROR",
-                            "error_reason": error_reason,
-                            "sql_detail": error_reason,
-                        }
-                    )
-                    continue
-                try:
-                    _upsert_laptop_item_to_main_tables(
-                        cursor,
-                        item_payload,
-                        entry["origin_target"],
-                        entry["thumb_target"],
-                        reco_result_cols=reco_result_cols,
-                    )
-                    cursor.execute(
-                        """
-                        UPDATE laptop_upload_job_item
-                        SET status = 'DONE', reason_code = '', error_reason = NULL, updated_at = NOW()
-                        WHERE id = %s
-                        """,
-                        (item_id,),
-                    )
-                    committed += 1
-                except Exception as item_error:
-                    failed += 1
-                    error_reason = str(item_error)
-                    cursor.execute(
-                        """
-                        UPDATE laptop_upload_job_item
-                        SET status = 'FAILED', reason_code = 'COMMIT_ERROR', error_reason = %s, updated_at = NOW()
-                        WHERE id = %s
-                        """,
-                        (error_reason, item_id),
-                    )
-                    failed_items.append(
-                        {
-                            "photo_uuid": item_photo_uuid,
-                            "file_name": item_file_name,
-                            "error_code": "COMMIT_SQL_ERROR",
-                            "error_reason": error_reason,
-                            "sql_detail": error_reason,
-                        }
-                    )
-            db_elapsed_ms = int((time.perf_counter() - db_started) * 1000)
-            logger.info("laptop-tool commit db job_id=%s committed=%s failed=%s elapsed_ms=%s", payload.job_id, committed, failed, db_elapsed_ms)
+                    db.conn.commit()
+            logger.info("laptop-tool commit db job_id=%s committed=%s failed=%s elapsed_ms=%s", payload.job_id, committed, failed, db_elapsed_total_ms)
             cursor.execute(
                 """
                 UPDATE laptop_upload_job
-                SET committed_count = committed_count + %s,
-                    failed_count = failed_count + %s,
-                    status = CASE WHEN failed_count + %s > 0 THEN 'FAILED' ELSE 'DONE' END,
+                SET status = CASE WHEN %s > 0 THEN 'FAILED' ELSE 'DONE' END,
                     error_summary = %s,
                     finished_at = NOW(),
                     updated_at = NOW()
                 WHERE job_id = %s
                 """,
                 (
-                    committed,
-                    failed,
                     failed,
                     json.dumps(failed_items[:50], ensure_ascii=False) if failed_items else None,
                     payload.job_id,
@@ -9501,13 +9565,15 @@ if MULTIPART_AVAILABLE:
                     payload.job_id,
                     job.get("staging_dir") or (LAPTOP_TOOL_STAGING_ROOT / payload.job_id),
                 )
+            else:
+                staging_cleanup_message = f"保留失敗 staging 以利排錯，failed_items={len(failed_items)}"
             return {
                 "job_id": payload.job_id,
                 "committed_count": committed,
                 "failed_count": failed,
                 "status": "FAILED" if failed > 0 else "DONE",
-                "copy_elapsed_ms": copy_elapsed_ms,
-                "db_elapsed_ms": db_elapsed_ms,
+                "copy_elapsed_ms": copy_elapsed_total_ms,
+                "db_elapsed_ms": db_elapsed_total_ms,
                 "commit_elapsed_ms": commit_elapsed_ms,
                 "staging_cleared": staging_cleared,
                 "staging_cleanup_message": staging_cleanup_message,
