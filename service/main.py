@@ -648,6 +648,8 @@ def _normalize_laptop_upload_job_row(row: dict) -> dict:
         "status_label": {
             "QUEUED": "排隊中",
             "RUNNING": "上傳中",
+            "PAUSED": "已暫停",
+            "CANCELED": "已取消",
             "DONE": "完成",
             "FAILED": "失敗",
         }.get(status, status or "未知"),
@@ -682,6 +684,8 @@ def _fetch_laptop_tool_upload_monitor_snapshot(
             COUNT(*) AS total_job_count,
             SUM(CASE WHEN status IN ('QUEUED', 'RUNNING') THEN 1 ELSE 0 END) AS active_job_count,
             COUNT(DISTINCT CASE WHEN status IN ('QUEUED', 'RUNNING') THEN device_id ELSE NULL END) AS active_device_count,
+            SUM(CASE WHEN status = 'PAUSED' THEN 1 ELSE 0 END) AS paused_job_count,
+            SUM(CASE WHEN status = 'CANCELED' THEN 1 ELSE 0 END) AS canceled_job_count,
             SUM(CASE WHEN status = 'DONE' THEN 1 ELSE 0 END) AS done_job_count,
             SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) AS failed_job_count,
             COALESCE(SUM(uploaded_count), 0) AS uploaded_total,
@@ -741,6 +745,8 @@ def _fetch_laptop_tool_upload_monitor_snapshot(
             "total_job_count": int(summary.get("total_job_count") or 0),
             "active_job_count": int(summary.get("active_job_count") or 0),
             "active_device_count": int(summary.get("active_device_count") or 0),
+            "paused_job_count": int(summary.get("paused_job_count") or 0),
+            "canceled_job_count": int(summary.get("canceled_job_count") or 0),
             "done_job_count": int(summary.get("done_job_count") or 0),
             "failed_job_count": int(summary.get("failed_job_count") or 0),
             "uploaded_total": int(summary.get("uploaded_total") or 0),
@@ -6628,6 +6634,13 @@ class LaptopToolUploadChunkMeta(BaseModel):
 
 class LaptopToolUploadCommitPayload(BaseModel):
     job_id: str = Field(..., min_length=1, max_length=80)
+    finalize: bool = Field(default=True)
+
+
+class LaptopToolUploadControlPayload(BaseModel):
+    job_id: str = Field(..., min_length=1, max_length=80)
+    action: str = Field(..., min_length=1, max_length=16)
+    reason: str = Field(default="", max_length=1000)
 
 
 class LaptopToolAdminSettingsPayload(BaseModel):
@@ -8883,7 +8896,7 @@ async def laptop_tool_upload_batch_start(payload: LaptopToolUploadStartPayload):
             """
             SELECT job_id
             FROM laptop_upload_job
-            WHERE device_id = %s AND status IN ('QUEUED', 'RUNNING')
+            WHERE device_id = %s AND status IN ('QUEUED', 'RUNNING', 'PAUSED')
             ORDER BY updated_at DESC, created_at DESC
             LIMIT 1
             """,
@@ -8937,6 +8950,74 @@ async def laptop_tool_upload_batch_status(job_id: str):
         if not row:
             return JSONResponse(status_code=404, content={"detail": "找不到 job_id"})
         return row
+    finally:
+        with contextlib.suppress(Exception):
+            if cursor:
+                cursor.close()
+        with contextlib.suppress(Exception):
+            if db:
+                db.close()
+
+
+@app.post("/laptop-tool/upload-batch/control")
+async def laptop_tool_upload_batch_control(payload: LaptopToolUploadControlPayload):
+    ensure_laptop_tool_tables()
+    action = str(payload.action or "").strip().upper()
+    if action not in {"PAUSE", "RESUME", "CANCEL", "FAIL"}:
+        return JSONResponse(status_code=400, content={"detail": "action 只能是 PAUSE / RESUME / CANCEL / FAIL"})
+    db = None
+    cursor = None
+    try:
+        db = mysqlconnector()
+        db.connect()
+        if db.conn is None:
+            raise RuntimeError("資料庫連線失敗")
+        cursor = db.conn.cursor(dictionary=True)
+        cursor.execute("SELECT job_id, status FROM laptop_upload_job WHERE job_id = %s LIMIT 1", (payload.job_id,))
+        job = cursor.fetchone()
+        if not job:
+            return JSONResponse(status_code=404, content={"detail": "找不到 job_id"})
+        current_status = str(job.get("status") or "").upper()
+        if action == "PAUSE":
+            if current_status not in {"QUEUED", "RUNNING"}:
+                return JSONResponse(status_code=409, content={"detail": f"目前狀態 {current_status} 不可暫停"})
+            new_status = "PAUSED"
+            finished_at = None
+        elif action == "RESUME":
+            if current_status != "PAUSED":
+                return JSONResponse(status_code=409, content={"detail": f"目前狀態 {current_status} 不可繼續"})
+            new_status = "RUNNING"
+            finished_at = None
+        else:
+            if action == "CANCEL":
+                if current_status in {"DONE", "FAILED", "CANCELED"}:
+                    return JSONResponse(status_code=409, content={"detail": f"目前狀態 {current_status} 不可取消"})
+                new_status = "CANCELED"
+                finished_at = _now_tpe().strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                if current_status in {"DONE", "FAILED", "CANCELED"}:
+                    return JSONResponse(status_code=409, content={"detail": f"目前狀態 {current_status} 不可標記失敗"})
+                new_status = "FAILED"
+                finished_at = _now_tpe().strftime("%Y-%m-%d %H:%M:%S")
+                error_summary = str(payload.reason or "").strip() or "工具程式本機執行失敗"
+        cursor.execute(
+            """
+            UPDATE laptop_upload_job
+            SET status = %s,
+                finished_at = %s,
+                error_summary = %s,
+                updated_at = NOW()
+            WHERE job_id = %s
+            """,
+            (new_status, finished_at, error_summary if action == "FAIL" else None, payload.job_id),
+        )
+        db.conn.commit()
+        return {"job_id": payload.job_id, "status": new_status}
+    except Exception as exc:
+        if db and db.conn:
+            with contextlib.suppress(Exception):
+                db.conn.rollback()
+        return JSONResponse(status_code=500, content={"detail": f"更新上傳作業狀態失敗：{exc}"})
     finally:
         with contextlib.suppress(Exception):
             if cursor:
@@ -9388,19 +9469,20 @@ if MULTIPART_AVAILABLE:
             commit_started = time.perf_counter()
             reco_result_cols = _get_table_columns(cursor, "reco_result", refresh=True)
             commit_batch_size = 100
+
             def copy_commit_artifacts(row: dict) -> dict:
                 item_id = row.get("id")
                 item_payload = {}
                 file_name = _safe_leaf_name(row.get("file_name") or "")
                 photo_uuid = str(row.get("photo_uuid") or "").strip()
+                origin_staging = str(row.get("origin_staging_path") or "").strip()
+                thumb_staging = str(row.get("thumb_staging_path") or "").strip()
                 try:
                     item_payload = json.loads(row.get("payload_json") or "{}")
                     file_name = _safe_leaf_name(item_payload.get("file_name") or file_name)
                     photo_uuid = str(item_payload.get("photo_uuid") or photo_uuid).strip()
                     if not file_name:
                         raise ValueError("file_name 缺失")
-                    origin_staging = str(row.get("origin_staging_path") or "").strip()
-                    thumb_staging = str(row.get("thumb_staging_path") or "").strip()
                     if not origin_staging or not Path(origin_staging).exists():
                         raise ValueError("origin_file 缺失")
                     origin_target = origin_root / file_name
@@ -9421,6 +9503,8 @@ if MULTIPART_AVAILABLE:
                         "item_payload": item_payload,
                         "origin_target": str(origin_target),
                         "thumb_target": str(thumb_target),
+                        "origin_staging": origin_staging,
+                        "thumb_staging": thumb_staging,
                         "file_name": file_name,
                         "photo_uuid": photo_uuid,
                     }
@@ -9431,6 +9515,8 @@ if MULTIPART_AVAILABLE:
                         "error": str(exc),
                         "file_name": file_name,
                         "photo_uuid": photo_uuid,
+                        "origin_staging": origin_staging,
+                        "thumb_staging": thumb_staging,
                     }
 
             copy_elapsed_total_ms = 0
@@ -9446,12 +9532,20 @@ if MULTIPART_AVAILABLE:
                     db_started = time.perf_counter()
                     batch_committed = 0
                     batch_failed = 0
-                    logger.info("laptop-tool commit copy job_id=%s batch_start=%s batch_rows=%s", payload.job_id, batch_start, len(batch_rows))
+                    logger.info(
+                        "laptop-tool commit copy job_id=%s batch_start=%s batch_rows=%s finalize=%s",
+                        payload.job_id,
+                        batch_start,
+                        len(batch_rows),
+                        bool(payload.finalize),
+                    )
                     for entry in copied_rows:
                         item_id = entry.get("item_id")
                         item_payload = entry.get("item_payload") if isinstance(entry.get("item_payload"), dict) else {}
                         item_photo_uuid = str((item_payload or {}).get("photo_uuid") or entry.get("photo_uuid") or "").strip()
                         item_file_name = _safe_leaf_name((item_payload or {}).get("file_name") or entry.get("file_name") or "")
+                        origin_staging = str(entry.get("origin_staging") or "").strip()
+                        thumb_staging = str(entry.get("thumb_staging") or "").strip()
                         if not entry.get("ok"):
                             batch_failed += 1
                             error_reason = str(entry.get("error") or "未知錯誤")
@@ -9490,6 +9584,16 @@ if MULTIPART_AVAILABLE:
                                 (item_id,),
                             )
                             batch_committed += 1
+                            with contextlib.suppress(Exception):
+                                if origin_staging:
+                                    origin_staging_path = Path(origin_staging)
+                                    if origin_staging_path.exists():
+                                        origin_staging_path.unlink()
+                            with contextlib.suppress(Exception):
+                                if thumb_staging:
+                                    thumb_staging_path = Path(thumb_staging)
+                                    if thumb_staging_path.exists():
+                                        thumb_staging_path.unlink()
                         except Exception as item_error:
                             batch_failed += 1
                             error_reason = str(item_error)
@@ -9514,70 +9618,83 @@ if MULTIPART_AVAILABLE:
                     db_elapsed_total_ms += int((time.perf_counter() - db_started) * 1000)
                     committed += batch_committed
                     failed += batch_failed
+                    existing_failed = int(job.get("failed_count") or 0)
+                    final_failed_total = existing_failed + failed
+                    if payload.finalize:
+                        next_status = "FAILED" if final_failed_total > 0 else "DONE"
+                    else:
+                        next_status = "RUNNING"
                     cursor.execute(
                         """
                         UPDATE laptop_upload_job
                         SET committed_count = committed_count + %s,
                             failed_count = failed_count + %s,
-                            status = CASE WHEN %s > 0 THEN 'FAILED' ELSE 'RUNNING' END,
+                            status = %s,
                             error_summary = %s,
+                            finished_at = CASE WHEN %s IN ('DONE', 'FAILED') THEN NOW() ELSE finished_at END,
                             updated_at = NOW()
                         WHERE job_id = %s
                         """,
                         (
                             batch_committed,
                             batch_failed,
-                            failed,
+                            next_status,
                             json.dumps(failed_items[:50], ensure_ascii=False) if failed_items else None,
+                            next_status,
                             payload.job_id,
                         ),
                     )
                     db.conn.commit()
             logger.info("laptop-tool commit db job_id=%s committed=%s failed=%s elapsed_ms=%s", payload.job_id, committed, failed, db_elapsed_total_ms)
-            cursor.execute(
-                """
-                UPDATE laptop_upload_job
-                SET status = CASE WHEN %s > 0 THEN 'FAILED' ELSE 'DONE' END,
-                    error_summary = %s,
-                    finished_at = NOW(),
-                    updated_at = NOW()
-                WHERE job_id = %s
-                """,
-                (
-                    failed,
-                    json.dumps(failed_items[:50], ensure_ascii=False) if failed_items else None,
-                    payload.job_id,
-                ),
-            )
-            db.conn.commit()
             commit_elapsed_ms = int((time.perf_counter() - commit_started) * 1000)
+            if payload.finalize:
+                cursor.execute(
+                    """
+                    UPDATE laptop_upload_job
+                    SET status = CASE WHEN %s > 0 THEN 'FAILED' ELSE 'DONE' END,
+                        error_summary = %s,
+                        finished_at = NOW(),
+                        updated_at = NOW()
+                    WHERE job_id = %s
+                    """,
+                    (
+                        int(job.get("failed_count") or 0) + failed,
+                        json.dumps(failed_items[:50], ensure_ascii=False) if failed_items else None,
+                        payload.job_id,
+                    ),
+                )
+                db.conn.commit()
             logger.info(
-                "laptop-tool commit finished job_id=%s committed=%s failed=%s elapsed_ms=%s",
+                "laptop-tool commit finished job_id=%s committed=%s failed=%s elapsed_ms=%s finalize=%s",
                 payload.job_id,
                 committed,
                 failed,
                 commit_elapsed_ms,
+                bool(payload.finalize),
             )
             staging_cleared = False
             staging_cleanup_message = ""
-            if failed == 0:
+            if payload.finalize and (int(job.get("failed_count") or 0) + failed) == 0:
                 staging_cleared, staging_cleanup_message = _cleanup_laptop_tool_staging_dir(
                     payload.job_id,
                     job.get("staging_dir") or (LAPTOP_TOOL_STAGING_ROOT / payload.job_id),
                 )
-            else:
+            elif payload.finalize:
                 staging_cleanup_message = f"保留失敗 staging 以利排錯，failed_items={len(failed_items)}"
+            else:
+                staging_cleanup_message = "批次提交完成，保留剩餘 staging 以供後續續跑。"
             return {
                 "job_id": payload.job_id,
                 "committed_count": committed,
                 "failed_count": failed,
-                "status": "FAILED" if failed > 0 else "DONE",
+                "status": "FAILED" if payload.finalize and (int(job.get("failed_count") or 0) + failed) > 0 else ("DONE" if payload.finalize else "RUNNING"),
                 "copy_elapsed_ms": copy_elapsed_total_ms,
                 "db_elapsed_ms": db_elapsed_total_ms,
                 "commit_elapsed_ms": commit_elapsed_ms,
                 "staging_cleared": staging_cleared,
                 "staging_cleanup_message": staging_cleanup_message,
                 "failed_items": failed_items,
+                "finalize": bool(payload.finalize),
             }
         except Exception as e:
             if db and db.conn:

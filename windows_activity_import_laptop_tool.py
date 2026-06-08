@@ -1,4 +1,5 @@
 import csv
+import contextlib
 import json
 import html as html_lib
 import os
@@ -109,6 +110,17 @@ def _safe_name(text: str) -> str:
     for ch in '<>:"/\\|?*':
         value = value.replace(ch, "_")
     return value.replace(" ", "_")
+
+
+def _display_windows_path(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    try:
+        value = os.path.normpath(value)
+    except Exception:
+        value = value.replace("/", "\\")
+    return value.replace("/", "\\")
 
 
 def _to_int(value, default=0):
@@ -325,6 +337,7 @@ class LaptopTool:
         self.normalize_mode_text = tk.StringVar(value=NORMALIZE_MODE_OPTIONS[0][0])
         self.run_mode_text = tk.StringVar(value=RUN_MODE_OPTIONS[1][0])
         self.enable_pyiqa = tk.BooleanVar(value=False)
+        self.step23_batch_size = tk.IntVar(value=100)
 
         self.incoming_dir = tk.StringVar(value=str(BASE_DIR / "incoming"))
         self.step23_source_dir = tk.StringVar(value=str(BASE_DIR / "normalized_success"))
@@ -349,6 +362,11 @@ class LaptopTool:
         self.log_file_map = {}
         self._local_state = {}
         self._startup_log_buffer = []
+        self._step23_control_lock = threading.Lock()
+        self._step23_state_lock = threading.RLock()
+        self._step23_control_action = "NONE"
+        self._step23_worker_running = False
+        self._step23_state_file = BASE_DIR / "upload_queue" / "step23_upload_state.json"
 
         self._prepare_dirs()
         self._build_ui()
@@ -460,7 +478,12 @@ class LaptopTool:
         row34.pack(fill=tk.X, padx=8, pady=(0, 6))
         ttk.Label(row34, text="是否做影像品質評分").grid(row=0, column=0, sticky="w")
         ttk.Checkbutton(row34, text="啟用 pyiqa_score", variable=self.enable_pyiqa).grid(row=0, column=1, sticky="w", padx=(8, 18))
-        ttk.Button(row34, text="開始匯入活動照片", command=self.start_step23, width=16).grid(row=0, column=2, sticky="w")
+        ttk.Label(row34, text="分批張數").grid(row=0, column=2, sticky="e", padx=(0, 6))
+        ttk.Entry(row34, textvariable=self.step23_batch_size, width=8).grid(row=0, column=3, sticky="w")
+        ttk.Button(row34, text="開始匯入活動照片", command=self.start_step23, width=16).grid(row=0, column=4, sticky="w", padx=(12, 6))
+        ttk.Button(row34, text="暫停匯入", command=self.pause_step23, width=10).grid(row=0, column=5, sticky="w", padx=(0, 6))
+        ttk.Button(row34, text="繼續匯入", command=self.resume_step23, width=10).grid(row=0, column=6, sticky="w", padx=(0, 6))
+        ttk.Button(row34, text="取消匯入", command=self.cancel_step23, width=10).grid(row=0, column=7, sticky="w")
 
         # 區塊4
         sec4 = ttk.LabelFrame(bottom, text="區塊4：Log")
@@ -712,11 +735,31 @@ class LaptopTool:
                 activity_code = str(data.get("default_activity_code") or "").strip().upper()
                 if activity_code:
                     self.schedule_code.set(activity_code)
+                batch_size = data.get("step23_batch_size")
+                try:
+                    batch_size_int = int(batch_size)
+                except Exception:
+                    batch_size_int = 100
+                if batch_size_int > 0:
+                    self.step23_batch_size.set(batch_size_int)
+                step23_source = str(data.get("step23_source_dir") or "").strip()
+                if step23_source:
+                    self.step23_source_dir.set(_display_windows_path(step23_source))
+                manifest_source = str(data.get("step23_manifest_source") or "").strip()
+                if manifest_source:
+                    self.step23_manifest_source.set(_display_windows_path(manifest_source))
+                manifest_path = str(data.get("step23_manifest_path") or "").strip()
+                if manifest_path:
+                    self.step23_manifest_path.set(_display_windows_path(manifest_path))
             except Exception:
                 pass
 
     def _save_local_state(self):
         DEVICE_CFG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            batch_size = int(self.step23_batch_size.get() or 100)
+        except Exception:
+            batch_size = 100
         payload = {
             "device_id": self.device_id.get().strip().upper(),
             "server_api_base": self.server_api.get().strip(),
@@ -724,9 +767,76 @@ class LaptopTool:
             "default_photographer": self.photographer.get().strip(),
             "default_normalize_mode": self.normalize_mode_text.get().strip(),
             "default_run_mode": self.run_mode_text.get().strip(),
+            "step23_batch_size": max(1, batch_size),
             "updated_at": _now_text(),
         }
         DEVICE_CFG_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+
+    def _get_step23_batch_size(self) -> int:
+        try:
+            value = int(self.step23_batch_size.get() or 100)
+        except Exception:
+            value = 100
+        return max(1, min(1000, value))
+
+    def _load_step23_upload_state(self) -> dict:
+        path = self._step23_state_file
+        with self._step23_state_lock:
+            if not path.exists():
+                return {}
+            try:
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
+                return data if isinstance(data, dict) else {}
+            except Exception:
+                return {}
+
+    def _save_step23_upload_state(self, data: dict):
+        path = self._step23_state_file
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        with self._step23_state_lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_name(f"{path.name}.tmp.{uuid4().hex}")
+            try:
+                tmp_path.write_text(payload, encoding="utf-8", newline="\n")
+                tmp_path.replace(path)
+            finally:
+                with contextlib.suppress(Exception):
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+
+    def _clear_step23_upload_state(self):
+        with self._step23_state_lock:
+            with contextlib.suppress(Exception):
+                if self._step23_state_file.exists():
+                    self._step23_state_file.unlink()
+
+    def _set_step23_control_action(self, action: str):
+        with self._step23_control_lock:
+            self._step23_control_action = str(action or "").strip().upper() or "NONE"
+
+    def _pop_step23_control_action(self) -> str:
+        with self._step23_control_lock:
+            action = self._step23_control_action
+            self._step23_control_action = "NONE"
+            return action
+
+    def _post_upload_control_action(self, job_id: str, action: str, reason: str = "") -> dict:
+        action = str(action or "").strip().upper()
+        if action not in {"PAUSE", "RESUME", "CANCEL", "FAIL"}:
+            raise ValueError(f"不支援的控制動作：{action}")
+        api = self._api_base()
+        payload = {"job_id": job_id, "action": action}
+        if reason:
+            payload["reason"] = str(reason)
+        return _post_json(
+            f"{api}/laptop-tool/upload-batch/control",
+            payload,
+            timeout=30,
+        )
+
+    def _fetch_step23_server_job(self, job_id: str) -> dict:
+        api = self._api_base()
+        return _json_request(f"{api}/laptop-tool/upload-batch/{urllib.parse.quote(job_id)}", timeout=20)
 
     def _load_config_default(self):
         if DEFAULT_CONFIG_PATH.exists():
@@ -1224,7 +1334,7 @@ class LaptopTool:
                 "files": records,
             }
             (work / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
-            self.step23_source_dir.set(str(success))
+            self.step23_source_dir.set(_display_windows_path(str(success)))
             if mode == "exif":
                 self.append(f"[{_now_text()}] 模式A統計：命中活動編號 {matched_ok} 筆，EXIF_000 {matched_000} 筆，無 EXIF 失敗 {missing_exif} 筆。")
             self.append(f"[{_now_text()}] 正規化完成：成功 {ok}，失敗 {ng}")
@@ -1242,7 +1352,7 @@ class LaptopTool:
         for m in manifests:
             try:
                 data = json.loads(m.read_text(encoding="utf-8-sig"))
-                sf = str(data.get("source_folder") or "").strip()
+                sf = _display_windows_path(str(data.get("source_folder") or "").strip())
                 if sf:
                     return sf, str(m)
             except Exception:
@@ -1255,7 +1365,7 @@ class LaptopTool:
             messagebox.showwarning(APP_TITLE, "找不到可用的 manifest。")
             return
         self.step23_manifest_path.set(manifest_path or "")
-        self.step23_manifest_source.set(source)
+        self.step23_manifest_source.set(_display_windows_path(source))
         self.append(f"[{_now_text()}] 套用最新 manifest：{manifest_path} -> {source}")
 
     def pick_manifest_file(self):
@@ -1264,7 +1374,7 @@ class LaptopTool:
             return
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
-            source = str(data.get("source_folder") or "").strip()
+            source = _display_windows_path(str(data.get("source_folder") or "").strip())
             if not source:
                 raise RuntimeError("manifest 缺少 source_folder")
             self.step23_manifest_path.set(path)
@@ -1276,6 +1386,10 @@ class LaptopTool:
     def start_step23(self):
         if not self._validate_required():
             return
+        state = self._load_step23_upload_state()
+        if state.get("status") in {"RUNNING", "PAUSED"} and str(state.get("job_id") or "").strip():
+            messagebox.showwarning(APP_TITLE, "已有未完成的匯入作業，請先使用「繼續匯入」或「取消匯入」。")
+            return
         self.active_section = "section3"
         self.log_offset = 0
         self.upload_progress.set(0.0)
@@ -1285,6 +1399,155 @@ class LaptopTool:
             threading.Thread(target=self._run_local_mode_worker, daemon=True).start()
         else:
             threading.Thread(target=self._run_server_mode_worker, daemon=True).start()
+
+    def pause_step23(self):
+        job_id = str(self.current_step23_job_id or "").strip()
+        state = self._load_step23_upload_state()
+        if not job_id:
+            job_id = str(state.get("job_id") or "").strip()
+        if not job_id:
+            messagebox.showwarning(APP_TITLE, "目前沒有正在執行的上傳作業。")
+            return
+        state_status = str(state.get("status") or "").strip().upper()
+        if state_status == "PAUSED":
+            messagebox.showwarning(APP_TITLE, "目前作業已經是暫停狀態，不需要重複暫停。")
+            return
+        if state_status in {"CANCELED", "DONE", "FAILED"}:
+            messagebox.showwarning(APP_TITLE, "目前作業已結束，無法暫停。")
+            return
+        self.active_section = "section3"
+        if not self._step23_worker_running:
+            try:
+                server_job = self._fetch_step23_server_job(job_id)
+                server_status = str(server_job.get("status") or "").upper()
+            except Exception:
+                server_status = ""
+            if server_status == "PAUSED":
+                with contextlib.suppress(Exception):
+                    self._clear_step23_upload_state()
+                self.current_step23_job_id = None
+                messagebox.showwarning(APP_TITLE, "目前作業已經是暫停狀態，不需要重複暫停。")
+                return
+            if server_status not in {"QUEUED", "RUNNING"}:
+                with contextlib.suppress(Exception):
+                    self._clear_step23_upload_state()
+                self.current_step23_job_id = None
+                messagebox.showwarning(APP_TITLE, "目前沒有正在執行的上傳作業。")
+                return
+        if self._step23_worker_running:
+            if self._step23_control_action == "PAUSE":
+                messagebox.showwarning(APP_TITLE, "暫停請求已送出，請等待目前這張完成後生效。")
+                return
+            self._set_step23_control_action("PAUSE")
+            self.append(f"[{_now_text()}] 已送出暫停請求，將在目前這張完成後生效。")
+            self._set_status_safe("已送出暫停請求，等待目前這張完成。")
+            return
+        try:
+            self._post_upload_control_action(job_id, "PAUSE")
+            state["job_id"] = job_id
+            state["status"] = "PAUSED"
+            state["updated_at"] = _now_text()
+            with contextlib.suppress(Exception):
+                self._save_step23_upload_state(state)
+            self.current_step23_job_id = job_id
+            self.append(f"[{_now_text()}] 已直接將作業設為暫停：{job_id}")
+            self._set_status_safe("已暫停匯入作業。")
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, f"暫停匯入失敗：{exc}")
+
+    def resume_step23(self):
+        state = self._load_step23_upload_state()
+        job_id = str(state.get("job_id") or "").strip()
+        if not job_id:
+            messagebox.showwarning(APP_TITLE, "目前沒有可繼續的匯入作業。")
+            return
+        status = str(state.get("status") or "").upper()
+        if status == "RUNNING":
+            messagebox.showwarning(APP_TITLE, "目前作業已在執行中，不需要重複繼續。")
+            return
+        if not self._step23_worker_running:
+            try:
+                server_job = self._fetch_step23_server_job(job_id)
+                server_status = str(server_job.get("status") or "").upper()
+            except Exception:
+                server_status = status
+            if server_status == "RUNNING":
+                self.current_step23_job_id = job_id
+                messagebox.showwarning(APP_TITLE, "目前作業已在執行中，不需要重複繼續。")
+                return
+            if server_status not in {"PAUSED"}:
+                with contextlib.suppress(Exception):
+                    self._clear_step23_upload_state()
+                self.current_step23_job_id = None
+                messagebox.showwarning(APP_TITLE, "目前作業狀態不可繼續。")
+                return
+        if status not in {"PAUSED"}:
+            messagebox.showwarning(APP_TITLE, "目前作業狀態不可繼續。")
+            return
+        if self._step23_worker_running:
+            messagebox.showwarning(APP_TITLE, "目前已有匯入作業在執行中。")
+            return
+        self.active_section = "section3"
+        self.log_offset = 0
+        self.current_step23_job_id = job_id
+        self.append(f"[{_now_text()}] 重新接續匯入作業：{job_id}")
+        threading.Thread(target=self._run_local_mode_worker, daemon=True).start()
+
+    def cancel_step23(self):
+        job_id = str(self.current_step23_job_id or "").strip()
+        if not job_id:
+            state = self._load_step23_upload_state()
+            job_id = str(state.get("job_id") or "").strip()
+        if not job_id:
+            messagebox.showwarning(APP_TITLE, "目前沒有可取消的匯入作業。")
+            return
+        state = self._load_step23_upload_state()
+        state_status = str(state.get("status") or "").strip().upper()
+        if state_status == "CANCELED":
+            messagebox.showwarning(APP_TITLE, "目前作業已經是取消狀態，不需要重複取消。")
+            return
+        if state_status in {"DONE", "FAILED"}:
+            messagebox.showwarning(APP_TITLE, "目前作業已結束，無法取消。")
+            return
+        self.current_step23_job_id = job_id
+        self.active_section = "section3"
+        if not self._step23_worker_running:
+            try:
+                server_job = self._fetch_step23_server_job(job_id)
+                server_status = str(server_job.get("status") or "").upper()
+            except Exception:
+                server_status = ""
+            if server_status == "CANCELED":
+                with contextlib.suppress(Exception):
+                    self._clear_step23_upload_state()
+                self.current_step23_job_id = None
+                messagebox.showwarning(APP_TITLE, "目前作業已經是取消狀態，不需要重複取消。")
+                return
+            if server_status not in {"QUEUED", "RUNNING", "PAUSED"}:
+                with contextlib.suppress(Exception):
+                    self._clear_step23_upload_state()
+                self.current_step23_job_id = None
+                messagebox.showwarning(APP_TITLE, "目前沒有可取消的匯入作業。")
+                return
+        if self._step23_worker_running:
+            if self._step23_control_action == "CANCEL":
+                messagebox.showwarning(APP_TITLE, "取消請求已送出，請等待目前這張完成後生效。")
+                return
+            self._set_step23_control_action("CANCEL")
+            self.append(f"[{_now_text()}] 已送出取消請求，將在目前這張完成後生效。")
+            self._set_status_safe("已送出取消請求，等待目前這張完成。")
+            return
+        try:
+            self._post_upload_control_action(job_id, "CANCEL")
+            state["job_id"] = job_id
+            state["status"] = "CANCELED"
+            state["updated_at"] = _now_text()
+            with contextlib.suppress(Exception):
+                self._save_step23_upload_state(state)
+            self.append(f"[{_now_text()}] 已直接取消作業：{job_id}")
+            self._set_status_safe("已取消匯入作業。")
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, f"取消匯入失敗：{exc}")
 
     def _run_server_mode_worker(self):
         try:
@@ -1321,7 +1584,7 @@ class LaptopTool:
             if not selected:
                 raise RuntimeError("來源資料夾無可處理檔案（已檢查 manifest 與目前來源）。")
 
-            self.step23_source_dir.set(selected)
+            self.step23_source_dir.set(_display_windows_path(selected))
             payload = {
                 "laptop_number": did,
                 "photographer": _extract_photographer_name(self.photographer.get()),
@@ -1469,14 +1732,24 @@ class LaptopTool:
                     self.append(f"[{_now_text()}] L6-PROBE {probe_name} FAIL：{type(exc).__name__}: {exc}")
 
             self.append(f"[{_now_text()}] 啟動上傳批次：total={len(files)}")
-            start_payload = {
-                "device_id": did,
-                "laptop_label": did,
-                "model_version": model_version,
-                "total_count": len(files),
-            }
-            start_data = _post_json(f"{api}/laptop-tool/upload-batch/start", start_payload, timeout=60)
-            upload_job_id = str(start_data.get("job_id") or "").strip()
+            resume_state = self._load_step23_upload_state()
+            upload_job_id = ""
+            if (
+                str(resume_state.get("source_folder") or "").strip() == os.fspath(selected)
+                and str(resume_state.get("job_id") or "").strip()
+                and str(resume_state.get("status") or "").upper() in {"PAUSED", "RUNNING"}
+            ):
+                upload_job_id = str(resume_state.get("job_id") or "").strip()
+                self.append(f"[{_now_text()}] 讀取暫存狀態，將接續既有 job_id={upload_job_id}")
+            else:
+                start_payload = {
+                    "device_id": did,
+                    "laptop_label": did,
+                    "model_version": model_version,
+                    "total_count": len(files),
+                }
+                start_data = _post_json(f"{api}/laptop-tool/upload-batch/start", start_payload, timeout=60)
+                upload_job_id = str(start_data.get("job_id") or "").strip()
             if not upload_job_id:
                 raise RuntimeError(f"啟動 upload-batch job 失敗：{start_data}")
             self.current_step23_job_id = upload_job_id
@@ -1505,6 +1778,17 @@ class LaptopTool:
                 except Exception as exc:
                     self.append(f"[{_now_text()}] pyiqa 無法啟用，將略過：{exc}")
                     metric = None
+
+            return self._run_local_upload_batches(
+                api=api,
+                did=did,
+                photographer=photographer,
+                selected=selected,
+                files=files,
+                face_recognition=face_recognition,
+                metric=metric,
+                upload_job_id=upload_job_id,
+            )
 
             results = []
             ok, ng, uploaded = 0, 0, 0
@@ -1885,6 +2169,381 @@ class LaptopTool:
             except Exception as exc:
                 self.append(f"[{_now_text()}] 輪詢失敗：{exc}")
                 time.sleep(2)
+
+    def _run_local_upload_batches(
+        self,
+        api: str,
+        did: str,
+        photographer: str,
+        selected: Path,
+        files: list[Path],
+        face_recognition,
+        metric,
+        upload_job_id: str,
+    ):
+        self._step23_worker_running = True
+        try:
+            resume_state = self._load_step23_upload_state()
+            use_resume_state = (
+                str(resume_state.get("job_id") or "").strip() == str(upload_job_id or "").strip()
+                and str(resume_state.get("status") or "").upper() in {"PAUSED", "RUNNING"}
+            )
+            batch_size = self._get_step23_batch_size()
+            all_paths = [Path(str(p)) for p in ((resume_state.get("all_files") if use_resume_state else None) or [os.fspath(p) for p in files]) if str(p).strip()]
+            if not all_paths:
+                all_paths = list(files)
+            processed_paths = {str(p) for p in ((resume_state.get("processed_paths") if use_resume_state else None) or [])}
+            processed_total = int((resume_state.get("processed_total") if use_resume_state else 0) or 0)
+            processed_in_batch = int((resume_state.get("processed_in_batch") if use_resume_state else 0) or 0)
+            uploaded_total = int((resume_state.get("uploaded_total") if use_resume_state else 0) or 0)
+            committed_total = int((resume_state.get("committed_total") if use_resume_state else 0) or 0)
+            failed_commit_total = int((resume_state.get("failed_commit_total") if use_resume_state else 0) or 0)
+            local_ok = int((resume_state.get("local_ok") if use_resume_state else 0) or 0)
+            local_fail = int((resume_state.get("local_fail") if use_resume_state else 0) or 0)
+            results = list((resume_state.get("results") if use_resume_state else None) or [])
+            all_failed_items = list((resume_state.get("failed_items") if use_resume_state else None) or [])
+            total_files = len(all_paths)
+            pending_commit_needed = uploaded_total > committed_total
+            current_state = str(resume_state.get("status") or "").upper() if use_resume_state else ""
+
+            if use_resume_state and current_state in {"PAUSED", "RUNNING"}:
+                self.append(f"[{_now_text()}] 接續既有作業：job_id={upload_job_id}")
+                with contextlib.suppress(Exception):
+                    self._post_upload_control_action(upload_job_id, "RESUME")
+
+            def save_state(status: str):
+                try:
+                    self._save_step23_upload_state(
+                        {
+                            "job_id": upload_job_id,
+                            "status": status,
+                            "device_id": did,
+                            "source_folder": os.fspath(selected),
+                            "batch_size": batch_size,
+                            "all_files": [os.fspath(p) for p in all_paths],
+                            "processed_paths": sorted(processed_paths),
+                            "processed_total": processed_total,
+                            "processed_in_batch": processed_in_batch,
+                            "uploaded_total": uploaded_total,
+                            "committed_total": committed_total,
+                            "failed_commit_total": failed_commit_total,
+                            "local_ok": local_ok,
+                            "local_fail": local_fail,
+                            "results": results,
+                            "failed_items": all_failed_items,
+                            "updated_at": _now_text(),
+                        }
+                    )
+                except Exception as exc:
+                    self.append(f"[{_now_text()}] STEP23_STATE_SAVE_WARN status={status} error={exc}")
+
+            def send_chunk_request(path: Path, item: dict) -> dict:
+                boundary = "----CodexLaptopToolBoundary"
+                meta_json = json.dumps(item, ensure_ascii=False)
+                body_parts = []
+
+                def add_field(name, value):
+                    body_parts.append(f"--{boundary}\r\n".encode("utf-8"))
+                    body_parts.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
+                    body_parts.append(str(value).encode("utf-8"))
+                    body_parts.append(b"\r\n")
+
+                add_field("job_id", upload_job_id)
+                add_field("seq_no", item["seq_no"])
+                add_field("item_json", meta_json)
+                file_bytes = path.read_bytes()
+                for field_name in ("origin_file", "thumb_file"):
+                    body_parts.append(f"--{boundary}\r\n".encode("utf-8"))
+                    body_parts.append(
+                        f'Content-Disposition: form-data; name="{field_name}"; filename="{path.name}"\r\n'.encode("utf-8")
+                    )
+                    body_parts.append(b"Content-Type: application/octet-stream\r\n\r\n")
+                    body_parts.append(file_bytes)
+                    body_parts.append(b"\r\n")
+                body_parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+                req = urllib.request.Request(
+                    f"{api}/laptop-tool/upload-batch/chunk",
+                    data=b"".join(body_parts),
+                    headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=120) as resp:
+                        return json.loads(resp.read().decode("utf-8", "replace"))
+                except urllib.error.HTTPError as http_exc:
+                    detail = ""
+                    with contextlib.suppress(Exception):
+                        detail = http_exc.read().decode("utf-8", "replace")
+                    raise RuntimeError(f"chunk 上傳失敗 HTTP {http_exc.code}: {detail[:500]}") from http_exc
+
+            def commit_pending(finalize: bool):
+                nonlocal committed_total, failed_commit_total, processed_in_batch, pending_commit_needed
+                if not pending_commit_needed and not finalize:
+                    return {"committed_count": 0, "failed_count": 0, "failed_items": []}
+                commit_data = _post_json(
+                    f"{api}/laptop-tool/upload-batch/commit",
+                    {"job_id": upload_job_id, "finalize": bool(finalize)},
+                    timeout=180,
+                )
+                committed_total += _to_int(commit_data.get("committed_count"), 0)
+                failed_commit_total += _to_int(commit_data.get("failed_count"), 0)
+                processed_in_batch = 0
+                pending_commit_needed = False
+                failed_items = commit_data.get("failed_items") or []
+                all_failed_items.extend(failed_items)
+                if failed_items:
+                    self.append(f"[{_now_text()}] COMMIT_FAILED_ITEMS {len(failed_items)}")
+                    for fi in failed_items[:20]:
+                        self.append(
+                            f"[{_now_text()}] COMMIT_FAIL photo_uuid={fi.get('photo_uuid', '')} file={fi.get('file_name', '')} code={fi.get('error_code', '')} reason={fi.get('error_reason', '')}"
+                        )
+                return commit_data
+
+            self.current_step23_job_id = upload_job_id
+            self._set_step23_control_action("NONE")
+            self.append(f"[{_now_text()}] [Local] job_id={upload_job_id} batch_size={batch_size} total={total_files}")
+            save_state("RUNNING")
+            if total_files > 0:
+                percent = int((processed_total / total_files) * 100)
+                self._set_progress_safe(float(percent), f"上傳進度：{percent}% ({processed_total}/{total_files})")
+                self.upload_progress_text.set(f"上傳進度：{percent}% ({processed_total}/{total_files})")
+
+            for idx, path in enumerate(all_paths, start=1):
+                path_str = os.fspath(path)
+                if path_str in processed_paths:
+                    continue
+                try:
+                    file_size = path.stat().st_size if path.exists() else 0
+                    self.append(f"[{_now_text()}] [Local {idx}/{total_files}] 檔案={path.name} size={file_size} ext={path.suffix}")
+                    image, image_source, image_error = _load_image_for_local(path)
+                    self.append(f"[{_now_text()}] [Local {idx}/{total_files}] 讀圖來源={image_source} err={image_error or 'OK'}")
+                    if image is None:
+                        raise RuntimeError(f"{image_error or 'LOCAL_IMAGE_DECODE_FAIL'}：無法讀取圖片 {path.name}")
+                    self.append(
+                        f"[{_now_text()}] [Local {idx}/{total_files}] image.shape={getattr(image, 'shape', None)} dtype={getattr(image, 'dtype', None)} contiguous={bool(getattr(getattr(image, 'flags', None), 'c_contiguous', False))}"
+                    )
+                    names, faces = face_recognition.recognition(image)
+                    names = names or []
+                    faces = faces or []
+                    face_position = []
+                    det_score = None
+                    for face in faces:
+                        if isinstance(face, dict):
+                            score = face.get("det_score")
+                            bbox_val = face.get("bbox")
+                            face_name = face.get("name") or "unknown"
+                        else:
+                            score = getattr(face, "det_score", None)
+                            bbox_val = getattr(face, "bbox", None)
+                            face_name = getattr(face, "name", None) or "unknown"
+                        try:
+                            score = float(score)
+                        except Exception:
+                            score = None
+                        if score is not None:
+                            det_score = max(det_score, score) if det_score is not None else score
+                        bbox_list = bbox_val.tolist() if hasattr(bbox_val, "tolist") else bbox_val
+                        if bbox_list is None:
+                            continue
+                        face_position.append({"name": face_name, "det_score": score, "bbox": bbox_list})
+
+                    pyiqa_score = None
+                    if self.enable_pyiqa.get() and metric is not None:
+                        try:
+                            pyiqa_score = float(metric(image[:, :, ::-1]).item())
+                        except Exception as exc:
+                            self.append(f"[{_now_text()}] [Local {idx}/{total_files}] pyiqa 評分失敗：{exc}")
+
+                    exif_dt = _extract_exif_dt(path)
+                    file_dt = datetime.fromtimestamp(path.stat().st_mtime)
+                    taken_dt = exif_dt or file_dt
+                    taken_time_source = "EXIF" if exif_dt else "FILE_TIME"
+                    reco_status = "DONE" if len(face_position) > 0 else "NO_FACE"
+                    photo_uuid = f"{did}_{uuid4().hex[:24]}"
+                    item = {
+                        "seq_no": idx,
+                        "photo_uuid": photo_uuid,
+                        "file_name": path.name,
+                        "photo_taken_time": taken_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                        "photo_file_time": file_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                        "taken_time_source": taken_time_source,
+                        "human_activity_date": "",
+                        "human_activity_time": "",
+                        "human_activity_name": "",
+                        "human_owner_team": "",
+                        "human_location": "",
+                        "human_photographer": photographer,
+                        "reco_name": names,
+                        "reco_res": face_position,
+                        "reco_count": len([x for x in names if str(x).lower() != "unknown"]),
+                        "reco_unknow": len([x for x in names if str(x).lower() == "unknown"]),
+                        "reco_status": reco_status,
+                        "reco_error": "",
+                        "img_score": pyiqa_score,
+                        "det_score": det_score,
+                    }
+                    send_chunk_request(path, item)
+                    uploaded_total += 1
+                    local_ok += 1
+                    results.append(item)
+                    processed_paths.add(path_str)
+                    processed_total += 1
+                    processed_in_batch += 1
+                    pending_commit_needed = True
+                    percent = int((processed_total / max(total_files, 1)) * 100)
+                    self._set_progress_safe(float(percent), f"上傳進度：{percent}% ({processed_total}/{total_files})")
+                    self.upload_progress_text.set(f"上傳進度：{percent}% ({processed_total}/{total_files})")
+                    dst_ok = BASE_DIR / "reco_success" / path.name
+                    m = 1
+                    while dst_ok.exists():
+                        dst_ok = BASE_DIR / "reco_success" / f"{Path(path.name).stem}_{m}{Path(path.name).suffix}"
+                        m += 1
+                    shutil.move(str(path), str(dst_ok))
+                    self.append(f"[{_now_text()}] [Local] 成功：{path.name}，uploaded={uploaded_total}")
+                except Exception as exc:
+                    local_fail += 1
+                    processed_paths.add(path_str)
+                    processed_total += 1
+                    fail_file_dt = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S") if path.exists() else _now_text()
+                    results.append(
+                        {
+                            "photo_uuid": f"{did}_{uuid4().hex[:24]}",
+                            "file_name": path.name,
+                            "file_path": str(path),
+                            "photo_taken_time": fail_file_dt,
+                            "photo_file_time": fail_file_dt,
+                            "taken_time_source": "FILE_TIME",
+                            "reco_name": [],
+                            "reco_res": [],
+                            "reco_count": 0,
+                            "reco_unknow": 0,
+                            "reco_status": "FAILED",
+                            "reco_error": str(exc),
+                            "img_score": None,
+                            "det_score": None,
+                            "error_reason": str(exc),
+                        }
+                    )
+                    dst_fail = BASE_DIR / "reco_fail" / path.name
+                    m = 1
+                    while dst_fail.exists():
+                        dst_fail = BASE_DIR / "reco_fail" / f"{Path(path.name).stem}_{m}{Path(path.name).suffix}"
+                        m += 1
+                    with contextlib.suppress(Exception):
+                        shutil.move(str(path), str(dst_fail))
+                    self.append(f"[{_now_text()}] [Local {idx}/{total_files}] 失敗：{path.name}，原因：{exc}")
+
+                save_state("RUNNING")
+                if processed_in_batch >= batch_size:
+                    if pending_commit_needed:
+                        commit_pending(finalize=False)
+                    else:
+                        processed_in_batch = 0
+                    save_state("RUNNING")
+
+                control_action = self._pop_step23_control_action()
+                if control_action in {"PAUSE", "CANCEL"}:
+                    with contextlib.suppress(Exception):
+                        self._post_upload_control_action(upload_job_id, control_action)
+                    save_state("PAUSED" if control_action == "PAUSE" else "CANCELED")
+                    self.append(f"[{_now_text()}] 已在單張邊界套用 {control_action}，停止後續匯入。")
+                    return
+
+            final_commit_data = commit_pending(finalize=True)
+            failed_items = final_commit_data.get("failed_items") or []
+            all_failed_items.extend(failed_items)
+            if failed_commit_total > 0 and all_failed_items:
+                self.append(f"[{_now_text()}] COMMIT_FAILED_ITEMS {len(all_failed_items)}")
+                for fi in all_failed_items[:20]:
+                    self.append(
+                        f"[{_now_text()}] COMMIT_FAIL photo_uuid={fi.get('photo_uuid', '')} file={fi.get('file_name', '')} code={fi.get('error_code', '')} reason={fi.get('error_reason', '')}"
+                    )
+
+            jpath = BASE_DIR / "upload_queue" / f"local_reco_{upload_job_id}.json"
+            cpath = BASE_DIR / "upload_queue" / f"local_reco_{upload_job_id}.csv"
+            jpath.write_text(
+                json.dumps(
+                    {
+                        "job_id": upload_job_id,
+                        "device_id": did,
+                        "mode": "local",
+                        "enable_pyiqa": self.enable_pyiqa.get(),
+                        "created_at": _now_text(),
+                        "source_folder": os.fspath(selected),
+                        "results": results,
+                        "summary": {
+                            "scanned": len(all_paths),
+                            "local_success": local_ok,
+                            "local_failed": local_fail,
+                            "uploaded": uploaded_total,
+                            "committed_count": committed_total,
+                            "failed_commit": failed_commit_total,
+                        },
+                        "failed_items": all_failed_items,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+                newline="\n",
+            )
+            with cpath.open("w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=["file_name", "photo_uuid", "reco_name", "det_score", "reco_count", "reco_unknow", "error_reason"],
+                )
+                writer.writeheader()
+                for r in results:
+                    writer.writerow(
+                        {
+                            "file_name": r.get("file_name", ""),
+                            "photo_uuid": r.get("photo_uuid", ""),
+                            "reco_name": ",".join(r.get("reco_name") or []),
+                            "det_score": r.get("det_score"),
+                            "reco_count": r.get("reco_count", ""),
+                            "reco_unknow": r.get("reco_unknow", ""),
+                            "error_reason": r.get("error_reason", ""),
+                        }
+                    )
+
+            if failed_commit_total > 0:
+                shutil.copy2(jpath, BASE_DIR / "upload_fail" / jpath.name)
+                shutil.copy2(cpath, BASE_DIR / "upload_fail" / cpath.name)
+                save_state("FAILED")
+            else:
+                shutil.copy2(jpath, BASE_DIR / "upload_done" / jpath.name)
+                shutil.copy2(cpath, BASE_DIR / "upload_done" / cpath.name)
+                save_state("DONE")
+                with contextlib.suppress(Exception):
+                    self._clear_step23_upload_state()
+
+            self.append(
+                f"[{_now_text()}] Local 模式完成：scanned={len(all_paths)} local_ok={local_ok} local_fail={local_fail} uploaded={uploaded_total} committed={committed_total} commit_failed={failed_commit_total}"
+            )
+            self.upload_progress.set(100.0)
+            self.upload_progress_text.set(f"上傳進度：100% ({processed_total}/{len(all_paths)})")
+            self._set_status_safe(
+                f"Local 模式完成：scanned={len(all_paths)} success={local_ok} failed={local_fail} uploaded={uploaded_total} committed={committed_total} commit_failed={failed_commit_total}"
+            )
+            self.refresh_log_files()
+        except Exception as exc:
+            self.append(f"[{_now_text()}] LOCAL_WORKER_ERROR: {exc}")
+            self.append(traceback.format_exc().strip())
+            if str(upload_job_id or "").strip():
+                with contextlib.suppress(Exception):
+                    self._post_upload_control_action(upload_job_id, "FAIL", reason=str(exc))
+            self._set_status_safe(f"Local 模式失敗：{exc}")
+            try:
+                current = self._load_step23_upload_state()
+                if current.get("job_id"):
+                    current["status"] = "FAILED"
+                    current["updated_at"] = _now_text()
+                    with contextlib.suppress(Exception):
+                        self._save_step23_upload_state(current)
+            except Exception:
+                pass
+        finally:
+            self._step23_worker_running = False
 
     def refresh_log_files(self):
         kind = self.log_type.get().strip()
