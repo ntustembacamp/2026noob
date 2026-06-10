@@ -3304,7 +3304,25 @@ def build_advanced_conditions(
         elif normalized_status == "FAILED":
             conditions.append("COALESCE(iu.reco_status, 'PENDING') = 'FAILED'")
         elif normalized_status == "PENDING":
-            conditions.append("COALESCE(iu.reco_status, 'PENDING') IN ('PENDING','RETRY')")
+            conditions.append(
+                """
+                (
+                  COALESCE(iu.reco_status, 'PENDING') <> 'FAILED'
+                  AND (
+                    rr.id IS NULL
+                    OR COALESCE(iu.reco_status, 'PENDING') IN ('PENDING', 'RETRY', 'NO_FACE')
+                    OR (
+                      COALESCE(iu.reco_status, 'PENDING') = 'DONE'
+                      AND COALESCE(rr.reco_count, 0) = 0
+                      AND NOT (
+                        LOWER(COALESCE(rr.reco_name, '')) LIKE '%"unknown"%'
+                        OR LOWER(COALESCE(rr.reco_name, '')) = 'unknown'
+                      )
+                    )
+                  )
+                )
+                """
+            )
         elif normalized_status == "UNKNOWN":
             conditions.append(
                 """
