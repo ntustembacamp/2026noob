@@ -14,13 +14,13 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONIOENCODING=utf-8
 
 RUN apt update -y && \
-    apt install -y libgl1 && \
-    apt install -y vim && \
+    apt install -y --no-install-recommends libgl1 && \
     python -m pip install --upgrade pip && \
-    pip install --no-cache-dir --retries 20 --timeout 300 -r requirements.txt && \
+    pip install --no-cache-dir --retries 20 --timeout 300 --extra-index-url https://download.pytorch.org/whl/cu130 -r requirements.txt && \
     pip install --no-cache-dir --retries 20 --timeout 300 openpyxl==3.1.5 python-multipart==0.0.20 && \
     apt clean && \
     rm -rf /var/lib/apt/lists/* && \
+    sed -i 's/\r$//' /install/start.sh && \
     chmod +x /install/start.sh
     
 # CMD ["sh", "/install/start.sh"]
